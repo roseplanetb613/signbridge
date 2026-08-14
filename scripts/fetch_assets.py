@@ -14,8 +14,8 @@ SOURCES = {
     "hand_open.jpg": (
         "https://upload.wikimedia.org/wikipedia/commons/1/14/Woman%27s_Right_Hand.jpg",
     ),
-    "fist.jpg": (
-        "https://upload.wikimedia.org/wikipedia/commons/5/57/Fist-up.jpg",
+    "thumbs_up.jpg": (
+        "https://upload.wikimedia.org/wikipedia/commons/8/86/Thumbs_Up.JPG",
     ),
 }
 
