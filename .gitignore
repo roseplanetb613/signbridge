@@ -5,3 +5,9 @@ __pycache__/
 .venv/
 dist/
 build/
+
+# 个人验证媒体（用户照片/录屏的叠加图，不上传）
+docs/images/test_overlay.png
+docs/images/test_overlay_depth.png
+docs/images/obs_tracking_overlay.mp4
+

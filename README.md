@@ -2,10 +2,12 @@
 
 手语翻译项目 —— MediaPipe 关键点组件库（基础层）。
 
-当前版本实现**手部关键点提取**：输入摄像头 / 视频文件 / 图片，输出每帧 0~N 只手的
-21 个关键点（归一化坐标 + 米制 3D world 坐标）与左右手判定，并支持叠加可视化。
+当前版本（0.2.0）实现**手部关键点提取**（输入摄像头 / 视频文件 / 图片，输出每帧
+0~N 只手的 21 个关键点，归一化坐标 + 米制 3D world 坐标，左右手判定，叠加可视化）
+与**时序序列缓冲**（帧间多手追踪、ID 生命周期、滑动窗口、腕点归一化，
+输出可直接喂 ST-GCN 的时序张量）。
 
-技术栈：Python · MediaPipe Tasks API · OpenCV · NumPy · PyTorch（后续）· ST-GCN（后续）
+技术栈：Python · MediaPipe Tasks API · OpenCV · NumPy · PySide6 · PyTorch（后续）· ST-GCN（后续）
 
 ## 安装
 
