@@ -44,6 +44,8 @@ class CameraSource:
         return self
 
     def __next__(self) -> FrameTuple:
+        if self._cap is None:
+            raise StopIteration
         ok, frame = self._cap.read()
         if not ok or frame is None:
             raise StopIteration
@@ -79,6 +81,8 @@ class VideoSource:
         return self
 
     def __next__(self) -> FrameTuple:
+        if self._cap is None:
+            raise StopIteration
         ok, frame = self._cap.read()
         if not ok or frame is None:
             raise StopIteration
