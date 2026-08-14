@@ -123,11 +123,15 @@ class HungarianMatcher:
 
 ## 8. 窗口 / 间隙语义
 
-- `update()` 每帧调用：新帧入窗，超出 `window_size` 的旧帧滑出
-- **无手 / 匹配失败帧**：窗口不推进（`data` 不追加该帧），该手 `valid_mask`
-  对应位为 False，时间戳继续走；该手进入 lost 计数
+- `update()` 每帧调用，窗口按**帧槽位**推进：每帧为每只活动手保留一个槽位
+- **该帧有手数据** → `data` 行有效值 + `valid_mask=True`
+- **该帧手丢失（无手 / 匹配失败）** → `data` 行以 NaN 占位 + `valid_mask=False`
+  （窗口照常滑动，`timestamps`/`frame_indices` 照常记录该帧）——不掺入假数据，
+  且双手通道天然时间对齐，可直接成形 `(T, 2, 21, 3)` 双通道张量
+- 窗口长度固定：`min(已处理帧数, window_size)`
 - **ID 回收后**：其 `HandSequence` 从输出移除（调用方自行保存已结束序列）
-- **双手全无**：缓冲空转，无输出
+- **双手全无**：缓冲空转，输出空元组
+- 输出按 `hand_id` 升序排序（确定性）
 
 ## 9. 平滑接口（`core/smoothing.py`，可插拔）
 
@@ -156,7 +160,7 @@ class OneEuroSmoother:
   - fake matcher 驱动 Buffer → 证明 Buffer 不依赖具体匹配实现（可插拔验证）
 - `test_sequence_buffer.py`：
   - 窗口滑动：30 帧喂入 window=60 → data 长度 30；70 帧 → 长度 60
-  - 无手帧不推进窗口（valid_mask 语义）
+  - 丢失帧占位：data 行 NaN + valid_mask=False（窗口照常滑动）
   - 腕点归一化正确性：每帧 data 的 WRIST 行 ≈ (0,0,0)
   - 双手两路序列独立、ID 排序稳定
   - fake smoother 断言被正确调用
