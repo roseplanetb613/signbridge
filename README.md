@@ -39,6 +39,41 @@ cv2.imwrite("overlay.jpg", overlay)
 detector.close()
 ```
 
+## 时序序列缓冲（第二步）
+
+把连续帧的手部关键点缓冲成按手 ID 稳定分离的时序序列，直接作为 ST-GCN 输入：
+
+```python
+import cv2
+from signbridge import HandDetector, ImageSource, HandSequenceBuffer, OneEuroSmoother, HungarianMatcher
+
+buf = HandSequenceBuffer(
+    window_size=60,                       # 滑动窗口（帧）
+    max_lost_frames=10,                   # 手失联保留帧数，超时回收 ID
+    matcher=HungarianMatcher(distance_threshold=0.15),  # 可插拔：帧间匹配
+    coordinate="world",                   # 米制 3D（ST-GCN 首选）
+    smoother=OneEuroSmoother(),           # 可插拔：关键点平滑（None 关闭）
+)
+
+detector = HandDetector(max_num_hands=2)
+src = ImageSource("hand.jpg", repeat=True)   # 单帧循环演示
+for frame, _, _ in src:
+    sequences = buf.update(detector.detect(frame))   # -> tuple[HandSequence, ...]
+    for seq in sequences:
+        print(seq.hand_id, seq.handedness)           # 0 "Left"
+        print(seq.data.shape)                        # (60, 21, 3) 腕点归一化
+        print(seq.valid_mask)                        # 丢失帧为 False（data 行 NaN）
+    if buf.left_hand_id >= 0 and buf.right_hand_id >= 0:
+        break
+src.close()
+detector.close()
+```
+
+`HandSequence.data` 为 (T, 21, 3) float32：每帧减去腕点坐标（腕点即原点），
+`valid_mask` 标记真实数据（丢失帧 NaN 占位），可直接拼接为 (T, 2, 21, 3) 双通道
+张量或按手独立喂给 ST-GCN。匹配与平滑均为可插拔协议：实现 `Matcher` /
+`LandmarkSmoother` 协议即可替换（如光流匹配、卡尔曼平滑）。
+
 ## CLI 演示工具
 
 ```bash
@@ -57,9 +92,12 @@ python -m signbridge.hands.cli --download-model                # 预下载模型
 | --- | --- |
 | `signbridge.core.landmarks` | `Landmark` / `Hand` / `HandFrame` 数据类；`HAND_CONNECTIONS`（21 条骨骼边）、`HAND_LANDMARK_NAMES`（21 点名） |
 | `signbridge.core.errors` | `SignBridgeError` 及 `ModelNotFoundError` / `ModelDownloadError` / `SourceOpenError` / `InvalidArgumentError` |
+| `signbridge.core.matching` | `Matcher` 协议 + `Matching` 结果 + `HungarianMatcher(distance_threshold)`（可插拔帧间匹配） |
+| `signbridge.core.smoothing` | `LandmarkSmoother` 协议 + `OneEuroSmoother(min_cutoff, beta, d_cutoff)`（可插拔平滑） |
 | `signbridge.hands.detector` | `HandDetector(max_num_hands, min_detection_confidence, min_tracking_confidence, model_path=None)`；`detect(bgr_frame) -> HandFrame`；支持 with 语句 |
 | `signbridge.hands.sources` | `CameraSource(camera_id)` / `VideoSource(path)`（含 `meta`）/ `ImageSource(path, repeat=False)`；统一产出 `(frame, frame_index, timestamp_ms)` |
-| `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None) -> 新帧` |
+| `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None)` 与 `draw_landmarks_depth(frame, hand_frame)`（左蓝右绿、深度明暗） |
+| `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother)` |
 | `signbridge.hands.model` | `ensure_model()` / `cache_dir()` / `default_model_path()` |
 
 ## 手部关键点图谱（21 点）

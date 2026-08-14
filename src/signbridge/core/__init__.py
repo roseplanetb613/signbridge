@@ -7,6 +7,8 @@ from signbridge.core.landmarks import (
     HandFrame,
     Landmark,
 )
+from signbridge.core.matching import HungarianMatcher, Matcher, Matching
+from signbridge.core.smoothing import LandmarkSmoother, OneEuroSmoother
 
 __all__ = [
     "HAND_CONNECTIONS",
@@ -14,4 +16,9 @@ __all__ = [
     "Hand",
     "HandFrame",
     "Landmark",
+    "HungarianMatcher",
+    "Matcher",
+    "Matching",
+    "LandmarkSmoother",
+    "OneEuroSmoother",
 ]

@@ -12,6 +12,7 @@ from signbridge.core.landmarks import (
 )
 from signbridge.hands.detector import HandDetector
 from signbridge.hands.draw import draw_landmarks
+from signbridge.hands.sequence import HandSequence, HandSequenceBuffer
 from signbridge.hands.sources import CameraSource, ImageSource, VideoSource
 
 __all__ = [
@@ -24,6 +25,8 @@ __all__ = [
     "Landmark",
     "HandDetector",
     "draw_landmarks",
+    "HandSequence",
+    "HandSequenceBuffer",
     "CameraSource",
     "ImageSource",
     "VideoSource",
