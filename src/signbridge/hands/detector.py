@@ -3,6 +3,7 @@
 import time
 from pathlib import Path
 
+import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
@@ -80,7 +81,9 @@ class HandDetector:
         """检测一帧 BGR 图像（H×W×3 uint8），返回 HandFrame（无手时 hands 为空）。"""
         if self._closed:
             raise RuntimeError("HandDetector 已 close()，不可再检测")
-        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+        # OpenCV 帧是 BGR，MediaPipe SRGB 期望 RGB —— 通道顺序错误会导致检测不到手
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self._landmarker.detect(image)
         hands = tuple(
             _to_hand(h, w, c)
