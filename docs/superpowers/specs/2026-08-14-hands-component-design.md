@@ -105,7 +105,7 @@ class HandFrame:
 ### 图谱常量（公开 API）
 
 - `HAND_LANDMARK_NAMES`：21 个关键点名称（0=WRIST, 1-4=THUMB_*, 5-8=INDEX_*, 9-12=MIDDLE_*, 13-16=RING_*, 17-20=PINKY_*）
-- `HAND_CONNECTIONS`：20 条骨骼边列表（腕→各指、指节间连接）——**未来直接作为 ST-GCN 的图边**
+- `HAND_CONNECTIONS`：21 条骨骼边（每指 4 条 × 5 指 = 20 条指骨边 + 腕→小指根 1 条手掌边，与 MediaPipe 官方一致）——**未来直接作为 ST-GCN 的图边**
 
 ## 6. 检测器 API（`signbridge.hands.detector`）
 
@@ -176,7 +176,7 @@ python -m signbridge.hands.cli --source image --path hand.jpg
 
 ## 12. 测试策略（pytest）
 
-- `test_landmarks.py`：图谱常量完整性（21 点名、20 条边、索引范围合法）
+- `test_landmarks.py`：图谱常量完整性（21 点名、21 条边、索引范围合法、无自环无重复）
 - `test_detector.py`：测试图片（含手样本）→ 检测到手、21 个关键点、坐标 ∈ [0,1]、handedness 合法；无手图片返回空；模型缺失抛 `ModelNotFoundError`（mock）
 - `test_sources.py`：图片/视频源迭代正确性、close 语义；摄像头用 mock 不碰真实设备
 - `test_draw.py`：叠加后输出帧尺寸/通道正确、原帧未被修改
