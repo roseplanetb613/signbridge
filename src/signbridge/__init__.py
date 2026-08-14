@@ -10,6 +10,8 @@ from signbridge.core.landmarks import (
     HandFrame,
     Landmark,
 )
+from signbridge.core.matching import HungarianMatcher
+from signbridge.core.smoothing import OneEuroSmoother
 from signbridge.hands.detector import HandDetector
 from signbridge.hands.draw import draw_landmarks
 from signbridge.hands.sequence import HandSequence, HandSequenceBuffer
@@ -23,6 +25,8 @@ __all__ = [
     "Hand",
     "HandFrame",
     "Landmark",
+    "HungarianMatcher",
+    "OneEuroSmoother",
     "HandDetector",
     "draw_landmarks",
     "HandSequence",
