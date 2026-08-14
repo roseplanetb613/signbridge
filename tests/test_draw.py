@@ -41,4 +41,4 @@ def test_handedness_colors_differ():
 def test_explicit_color_used():
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     out = draw_landmarks(frame, _open_hand_frame(), color=(0, 0, 255))
-    assert np.any(out[:, :, 0] > 0)
+    assert np.any(out[:, :, 2] > 0)  # BGR 红色在通道 2
