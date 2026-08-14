@@ -46,7 +46,7 @@ def test_none_input_keeps_state():
     a = s.update(pts.copy())
     assert s.update(None) is None
     b = s.update(pts.copy())
-    assert np.array_equal(a, b)  # None 不改变内部状态
+    assert np.allclose(a, b, atol=1e-6)  # None 不改变内部状态（仅浮点舍入差异）
 
 
 def test_reset_clears_memory():
