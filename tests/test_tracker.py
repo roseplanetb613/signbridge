@@ -105,12 +105,12 @@ class _FixedMatcher:
         self._m = matching
         self.calls = 0
 
-    def match(self, current_centroids, previous_centroids):
+    def match(self, current, previous):
         self.calls += 1
-        if len(previous_centroids) == 0:
+        if len(previous) == 0:
             return Matching(
                 matched=(),
-                unmatched_current=tuple(range(len(current_centroids))),
+                unmatched_current=tuple(range(len(current))),
                 unmatched_previous=(),
             )
         return self._m
@@ -142,3 +142,40 @@ def test_custom_matcher_full_unmatched_creates_new_ids(make_hand_frame, hand_pts
         for s in buf.update(make_hand_frame([("Left", pts)])):
             ids.add(s.hand_id)
     assert len(ids) == 4  # 每次都不匹配 → 每帧新 ID
+
+
+def test_recovery_across_position_same_shape(make_hand_frame, hand_pts):
+    """手消失后从画面另一侧以同手形出现 → 特征恢复原 ID。"""
+    buf = HandSequenceBuffer(window_size=30, coordinate="image", smoother=None,
+                             max_lost_frames=10)
+    pts_a = hand_pts(center=(0.2, 0.5), seed=0)   # 手形 A，位置左
+    pts_b = hand_pts(center=(0.8, 0.5), seed=0)   # 同手形 A，位置右（跨位置）
+    ids = set()
+    for _ in range(5):
+        for s in buf.update(make_hand_frame([("Left", pts_a)])):
+            ids.add(s.hand_id)
+    for _ in range(5):  # 消失 5 帧（<= max_lost_frames）
+        buf.update(HandFrame())
+    for _ in range(5):  # 画面另一侧同手形出现
+        for s in buf.update(make_hand_frame([("Left", pts_b)])):
+            ids.add(s.hand_id)
+    assert len(ids) == 1  # 特征判定为同一只手 → ID 恢复
+
+
+def test_recovery_across_position_different_shape_gets_new_id(make_hand_frame, hand_pts):
+    """消失后另一侧出现异手形 → 特征判定拒绝 → 新 ID。"""
+    buf = HandSequenceBuffer(window_size=30, coordinate="image", smoother=None,
+                             max_lost_frames=10)
+    pts_a = hand_pts(center=(0.2, 0.5), seed=0)
+    pts_other = hand_pts(center=(0.8, 0.5), seed=1)  # 异手形
+    first = set()
+    for _ in range(5):
+        for s in buf.update(make_hand_frame([("Left", pts_a)])):
+            first.add(s.hand_id)
+    for _ in range(11):  # 消失 11 帧（> max_lost_frames=10），原 ID 被回收
+        buf.update(HandFrame())
+    second = set()
+    for _ in range(5):
+        for s in buf.update(make_hand_frame([("Left", pts_other)])):
+            second.add(s.hand_id)
+    assert first.isdisjoint(second)  # 新 ID

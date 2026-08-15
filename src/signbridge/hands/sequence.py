@@ -11,8 +11,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from signbridge.core.features import FeatureExtractor, HandShapeFeature
 from signbridge.core.landmarks import HandFrame
-from signbridge.core.matching import HungarianMatcher, Matcher
+from signbridge.core.matching import (
+    FeatureHungarianMatcher,
+    HandDescriptor,
+    Matcher,
+)
 from signbridge.core.smoothing import LandmarkSmoother
 
 
@@ -34,7 +39,8 @@ class HandSequence:
 
 class _Track:
     __slots__ = ("hand_id", "handedness", "centroid", "lost_count",
-                 "smoother", "slots", "timestamps", "frame_indices")
+                 "smoother", "last_feature", "slots", "timestamps",
+                 "frame_indices")
 
     def __init__(self, hand_id, handedness, centroid, smoother):
         self.hand_id = hand_id
@@ -42,6 +48,7 @@ class _Track:
         self.centroid = centroid
         self.lost_count = 0
         self.smoother = smoother
+        self.last_feature = None
         self.slots: deque = deque()
         self.timestamps: deque = deque()
         self.frame_indices: deque = deque()
@@ -54,9 +61,12 @@ class HandSequenceBuffer:
         window_size: 滑动窗口帧数（槽位按帧推进，含丢失占位）
         max_hands: 手数上限（当前仅用于校验提示）
         max_lost_frames: ID 失联保留帧数，超过则回收
-        matcher: 可插拔帧间匹配器（默认 HungarianMatcher）
+        matcher: 可插拔帧间匹配器（默认 FeatureHungarianMatcher：
+                 位置匈牙利 + 特征恢复；传 HungarianMatcher 退回纯位置）
         coordinate: "world"（米制 world_landmarks，默认）| "image"（归一化坐标）
         smoother: 可插拔平滑器实例（内部按手 deepcopy）；None 不平滑
+        feature_extractor: 可插拔特征提取器（默认 HandShapeFeature；
+                           供匹配器做跨位置恢复判定；None 关闭特征）
     """
 
     def __init__(
@@ -67,6 +77,7 @@ class HandSequenceBuffer:
         matcher: Matcher | None = None,
         coordinate: str = "world",
         smoother: LandmarkSmoother | None = None,
+        feature_extractor: FeatureExtractor | None = None,
     ) -> None:
         if window_size <= 0:
             raise ValueError("window_size 必须 > 0")
@@ -78,7 +89,13 @@ class HandSequenceBuffer:
         self.max_hands = max_hands
         self.max_lost_frames = max_lost_frames
         self.coordinate = coordinate
-        self._matcher = matcher if matcher is not None else HungarianMatcher()
+        self._matcher = (
+            matcher if matcher is not None else FeatureHungarianMatcher()
+        )
+        self._feature_extractor = (
+            feature_extractor if feature_extractor is not None
+            else HandShapeFeature()
+        )
         self._smoother_factory = (
             (lambda: copy.deepcopy(smoother)) if smoother is not None else None
         )
@@ -105,32 +122,33 @@ class HandSequenceBuffer:
     def update(self, hand_frame: HandFrame) -> tuple[HandSequence, ...]:
         """喂入一帧 HandFrame，返回当前所有活动手的 HandSequence（按 hand_id 升序）。"""
         cur = self._extract(hand_frame)
-        cur_centroids = (
-            np.array([c for _, c, _ in cur], dtype=np.float32) if cur
-            else np.zeros((0, 2), dtype=np.float32)
-        )
-        prev_centroids = (
-            np.array([t.centroid for t in self._tracks.values()], dtype=np.float32)
-            if self._tracks else np.zeros((0, 2), dtype=np.float32)
-        )
-        matching = self._matcher.match(cur_centroids, prev_centroids)
+        cur_descriptors = [
+            HandDescriptor(centroid=c, feature=feat) for _, c, _, feat in cur
+        ]
+        prev_descriptors = [
+            HandDescriptor(centroid=t.centroid, feature=t.last_feature)
+            for t in self._tracks.values()
+        ]
+        matching = self._matcher.match(cur_descriptors, prev_descriptors)
         track_list = list(self._tracks.values())
         ts = hand_frame.timestamp_ms
 
         for ci, pi in matching.matched:                      # 匹配对 → 续用 ID
             track = track_list[pi]
-            handedness, centroid, pts = cur[ci]
+            handedness, centroid, pts, feature = cur[ci]
             track.lost_count = 0
             track.handedness = handedness
             track.centroid = centroid
+            track.last_feature = feature
             self._append_valid(track, pts, ts)
 
         for ci in matching.unmatched_current:                # 新手 → 新 ID
-            handedness, centroid, pts = cur[ci]
+            handedness, centroid, pts, feature = cur[ci]
             track = _Track(
                 self._next_id, handedness, centroid,
                 self._smoother_factory() if self._smoother_factory else None,
             )
+            track.last_feature = feature
             self._next_id += 1
             self._tracks[track.hand_id] = track
             self._append_valid(track, pts, ts)
@@ -161,14 +179,18 @@ class HandSequenceBuffer:
     # ---- 内部 ----
 
     def _extract(self, hand_frame: HandFrame):
-        """提取当前帧每只手：[(handedness, 质心(x,y), pts(21,3))]。"""
+        """提取当前帧每只手：[(handedness, 质心, pts(21,3), feature|None)]。"""
         out = []
         for hand in hand_frame.hands:
             lms = hand.world_landmarks if self.coordinate == "world" else hand.landmarks
             if len(lms) < 21:
                 continue
             pts = np.array([[lm.x, lm.y, lm.z] for lm in lms], dtype=np.float32)
-            out.append((hand.handedness, pts[:, :2].mean(axis=0), pts))
+            feature = (
+                self._feature_extractor.extract(pts)
+                if self._feature_extractor is not None else None
+            )
+            out.append((hand.handedness, pts[:, :2].mean(axis=0), pts, feature))
         return out
 
     def _append_valid(self, track: _Track, pts: np.ndarray, ts: int) -> None:
