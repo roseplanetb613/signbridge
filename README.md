@@ -2,10 +2,10 @@
 
 手语翻译项目 —— MediaPipe 关键点组件库（基础层）。
 
-当前版本（0.2.0）实现**手部关键点提取**（输入摄像头 / 视频文件 / 图片，输出每帧
+当前版本（0.3.0）实现**手部关键点提取**（输入摄像头 / 视频文件 / 图片，输出每帧
 0~N 只手的 21 个关键点，归一化坐标 + 米制 3D world 坐标，左右手判定，叠加可视化）
 与**时序序列缓冲**（帧间多手追踪、ID 生命周期、滑动窗口、腕点归一化，
-输出可直接喂 ST-GCN 的时序张量）。
+**特征增强匹配**：手形特征做跨位置丢失恢复，输出可直接喂 ST-GCN 的时序张量）。
 
 技术栈：Python · MediaPipe Tasks API · OpenCV · NumPy · PySide6 · PyTorch（后续）· ST-GCN（后续）
 
@@ -47,12 +47,12 @@ detector.close()
 
 ```python
 import cv2
-from signbridge import HandDetector, ImageSource, HandSequenceBuffer, OneEuroSmoother, HungarianMatcher
+from signbridge import HandDetector, ImageSource, HandSequenceBuffer, OneEuroSmoother
 
 buf = HandSequenceBuffer(
     window_size=60,                       # 滑动窗口（帧）
     max_lost_frames=10,                   # 手失联保留帧数，超时回收 ID
-    matcher=HungarianMatcher(distance_threshold=0.15),  # 可插拔：帧间匹配
+    # matcher 默认 FeatureHungarianMatcher：位置匹配 + 特征恢复（0.3.0 起）
     coordinate="world",                   # 米制 3D（ST-GCN 首选）
     smoother=OneEuroSmoother(),           # 可插拔：关键点平滑（None 关闭）
 )
@@ -76,6 +76,20 @@ detector.close()
 张量或按手独立喂给 ST-GCN。匹配与平滑均为可插拔协议：实现 `Matcher` /
 `LandmarkSmoother` 协议即可替换（如光流匹配、卡尔曼平滑）。
 
+## 特征增强匹配（0.3.0）
+
+正常跟踪走位置匈牙利匹配；手短暂消失后从画面**另一侧**重新出现时，
+用**手形特征**（210 维归一化距离矩阵，旋转/尺度/平移不变）做同一性判定：
+置信度 ≥ `confidence_threshold`（默认 0.85）→ 恢复原 ID，否则视为新手。
+
+两个可插拔协议：
+
+- `FeatureExtractor`：21×3 点阵 → 特征向量（默认 `HandShapeFeature`）
+- `FeatureVerifier`：两特征 → 置信度 [0,1]（默认 `DistanceFeatureVerifier`；
+  **未来 transformer / GCN 相似度模型实现此协议即可替换**）
+
+传 `matcher=HungarianMatcher()` 或 `feature_extractor=None` 可退回纯位置模式。
+
 ## CLI 演示工具
 
 ```bash
@@ -94,12 +108,13 @@ python -m signbridge.hands.cli --download-model                # 预下载模型
 | --- | --- |
 | `signbridge.core.landmarks` | `Landmark` / `Hand` / `HandFrame` 数据类；`HAND_CONNECTIONS`（21 条骨骼边）、`HAND_LANDMARK_NAMES`（21 点名） |
 | `signbridge.core.errors` | `SignBridgeError` 及 `ModelNotFoundError` / `ModelDownloadError` / `SourceOpenError` / `InvalidArgumentError` |
-| `signbridge.core.matching` | `Matcher` 协议 + `Matching` 结果 + `HungarianMatcher(distance_threshold)`（可插拔帧间匹配） |
+| `signbridge.core.matching` | `Matcher` 协议 v2（`HandDescriptor`）+ `Matching` + `HungarianMatcher`（纯位置）/ `FeatureHungarianMatcher`（分层：位置 + 特征恢复） |
+| `signbridge.core.features` | `FeatureExtractor` / `FeatureVerifier` 协议 + `HandShapeFeature`（210 维距离矩阵）/ `DistanceFeatureVerifier`（高斯核置信度） |
 | `signbridge.core.smoothing` | `LandmarkSmoother` 协议 + `OneEuroSmoother(min_cutoff, beta, d_cutoff)`（可插拔平滑） |
 | `signbridge.hands.detector` | `HandDetector(max_num_hands, min_detection_confidence, min_tracking_confidence, model_path=None)`；`detect(bgr_frame) -> HandFrame`；支持 with 语句 |
 | `signbridge.hands.sources` | `CameraSource(camera_id)` / `VideoSource(path)`（含 `meta`）/ `ImageSource(path, repeat=False)`；统一产出 `(frame, frame_index, timestamp_ms)` |
 | `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None)` 与 `draw_landmarks_depth(frame, hand_frame)`（左蓝右绿、深度明暗） |
-| `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother)` |
+| `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother, feature_extractor)` |
 | `signbridge.hands.model` | `ensure_model()` / `cache_dir()` / `default_model_path()` |
 
 ## 手部关键点图谱（21 点）
