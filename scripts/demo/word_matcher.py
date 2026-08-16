@@ -109,7 +109,8 @@ def hands_to_row(hands) -> np.ndarray | None:
     return None
 
 
-def run_camera(words, mat, camera_id: int, topk: int) -> None:
+def run_camera(words, mat, camera_id: int, topk: int,
+               embed_fn=None) -> None:
     """摄像头实时词识别：滑动窗口特征平均 → top-k 词叠加显示。"""
     import collections
 
@@ -126,21 +127,30 @@ def run_camera(words, mat, camera_id: int, topk: int) -> None:
         print(f"摄像头错误: {exc}", flush=True)
         return
     print("摄像头已打开，开始识别（q/Esc 退出）", flush=True)
-    history = collections.deque(maxlen=15)
+    history = collections.deque(maxlen=15)   # manual 模式：帧特征窗口
+    seg_rows = collections.deque(maxlen=15)  # stgcn 模式：骨架行窗口
     with HandDetector(max_num_hands=2,
                       min_detection_confidence=0.3) as detector:
         for frame, _, _ in src:
             hf = detector.detect(frame)
             row = hands_to_row(hf.hands)
             if row is not None:
-                f0 = FEATURE.extract(row[:21])
-                f1 = (FEATURE.extract(row[21:])
-                      if not np.isnan(row[21:]).all()
-                      else np.zeros(210, dtype=np.float32))
-                history.append(np.concatenate([f0, f1]))
+                if embed_fn is None:
+                    f0 = FEATURE.extract(row[:21])
+                    f1 = (FEATURE.extract(row[21:])
+                          if not np.isnan(row[21:]).all()
+                          else np.zeros(210, dtype=np.float32))
+                    history.append(np.concatenate([f0, f1]))
+                else:
+                    seg_rows.append(row)
             canvas = draw_landmarks_depth(frame, hf)
-            if history:
+            q = None
+            if embed_fn is not None:
+                if len(seg_rows) >= 15:
+                    q = embed_fn(np.stack(seg_rows))
+            elif history:
                 q = np.mean(np.stack(history), axis=0)
+            if q is not None:
                 for rank, (word, dist) in enumerate(
                         match(q, words, mat, topk), 1):
                     cv2.putText(canvas, f"{rank}. {word} ({dist:.2f})",
@@ -194,12 +204,18 @@ def main() -> int:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
         words, mat = build_templates_stgcn(npz, model, device)
+
+        def embed_fn(seg):
+            x = torch.from_numpy(seg.transpose(2, 0, 1)).unsqueeze(0).float()
+            with torch.no_grad():
+                return model.embed(x.to(device)).squeeze(0).cpu().numpy()
     else:
         words, mat = build_templates(npz)
         print(f"模板库: {len(words)} 词")
+        embed_fn = None
 
     if args.camera is not None:
-        run_camera(words, mat, args.camera, args.topk)
+        run_camera(words, mat, args.camera, args.topk, embed_fn)
         return 0
 
     if args.self_test:
