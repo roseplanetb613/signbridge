@@ -1,6 +1,11 @@
-"""随机抽样 N 个 CE-CSL 视频跑完整链路验证并汇总。
+"""随机抽样 N 个 CE-CSL 视频跑完整链路验证并汇总（优化版）。
 
-用法: python scripts/verify_dataset_batch.py [--count 10] [--seed 42] [--split train]
+优化点：
+1. 手势段切分：连续双手有效帧 ≥ min_len 构成一个样本段（不再要求全片有手）
+2. 质量标记：检测率 / 手 bbox 均值记录；低检测率样本标记 LOW_DETECTION
+3. 检测阈值可调（--conf，小手样本推荐 0.3）
+
+用法: python scripts/verify_dataset_batch.py [--count 10] [--seed 42] [--conf 0.3]
 """
 
 import argparse
@@ -24,62 +29,114 @@ from verify_dataset_pipeline import classify_two_hands, to_normalized
 MODEL = STGCN(num_classes=100, adjacency=build_hand_graph(num_hands=2))
 MODEL.eval()
 
+MIN_SEGMENT = 9      # ST-GCN kernel_size
+LOW_DETECTION = 0.3  # 检测率阈值
 
-def verify_one(video_path: str, window: int) -> dict:
+
+def extract_segments(valid: np.ndarray, min_len: int, merge_gap: int = 2) -> list[tuple[int, int]]:
+    """连续有效段提取：返回 [(start, length), ...]。
+
+    merge_gap: 有效段之间 ≤ merge_gap 帧的缝隙合并（容忍偶发漏检）。
+    """
+    n = len(valid)
+    if n == 0:
+        return []
+    starts, ends = [], []
+    in_seg = False
+    for i in range(n):
+        if valid[i] and not in_seg:
+            starts.append(i)
+            in_seg = True
+        elif not valid[i] and in_seg:
+            ends.append(i)
+            in_seg = False
+    if in_seg:
+        ends.append(n)
+    segs = []
+    cur_start, cur_end = None, None
+    for s, e in zip(starts, ends):
+        if cur_start is None:
+            cur_start, cur_end = s, e
+        elif s - cur_end <= merge_gap:      # 缝隙 ≤ gap → 合并
+            cur_end = e
+        else:
+            if cur_end - cur_start >= min_len:
+                segs.append((cur_start, cur_end - cur_start))
+            cur_start, cur_end = s, e
+    if cur_start is not None and cur_end - cur_start >= min_len:
+        segs.append((cur_start, cur_end - cur_start))
+    return segs
+
+
+def verify_one(video_path: str, window: int, conf: float) -> dict:
     src = VideoSource(video_path)
     buf = HandSequenceBuffer(window_size=window, coordinate="world",
                              smoother=OneEuroSmoother())
-    two = one = none = conflict = 0
-    rows = []
-    with HandDetector(max_num_hands=2) as detector:
+    rows = []            # 双手同帧的 42x3 行
+    hand_frames = 0      # 检测到至少一只手的帧
+    total = 0
+    hand_sizes = []      # 手 bbox 归一化面积
+    with HandDetector(max_num_hands=2, min_detection_confidence=conf) as detector:
         for frame_index, (frame, _, _) in enumerate(src):
             hf = detector.detect(frame)
             buf.update(hf)
+            total += 1
             hands = list(hf.hands)
+            if hands:
+                hand_frames += 1
+                for hand in hands:
+                    xs = [lm.x for lm in hand.landmarks]
+                    ys = [lm.y for lm in hand.landmarks]
+                    hand_sizes.append((max(xs) - min(xs)) * (max(ys) - min(ys)))
+            # 有手帧都构造 42 节点行：双手按方案 B 分块；
+            # 单手帧 → 该手入块 0、块 1 零填充（兼容单手手语视频）
             if len(hands) == 2:
-                two += 1
-                if hands[0].handedness == hands[1].handedness:
-                    conflict += 1
                 b0, b1 = classify_two_hands(hands[0], hands[1])
                 row = np.full((42, 3), np.nan, dtype=np.float32)
                 row[:21] = to_normalized(b0)
                 row[21:] = to_normalized(b1)
                 rows.append(row)
             elif len(hands) == 1:
-                one += 1
-            else:
-                none += 1
+                row = np.zeros((42, 3), dtype=np.float32)
+                row[:21] = to_normalized(hands[0])
+                rows.append(row)
     src.close()
-    total = two + one + none
-    tensor_ok = False
-    if rows:
-        tensor = np.stack(rows)
-        valid = ~np.isnan(tensor).any(axis=(1, 2))
-        tensor = tensor[valid]
-        if len(tensor) >= 9:  # ST-GCN kernel_size=9
-            x = torch.from_numpy(tensor).permute(2, 0, 1).unsqueeze(0).float()
-            with torch.no_grad():
-                MODEL(x)
-            tensor_ok = True
+
+    detection_rate = hand_frames / max(total, 1)
+    avg_size = float(np.mean(hand_sizes)) if hand_sizes else 0.0
+    segs = extract_segments(np.ones(len(rows), dtype=bool), MIN_SEGMENT)
+    seg_tensors = 0
+    for start, length in segs:
+        tensor = np.stack(rows[start:start + length])
+        x = torch.from_numpy(tensor).permute(2, 0, 1).unsqueeze(0).float()
+        with torch.no_grad():
+            MODEL(x)
+        seg_tensors += 1
+    if segs:
+        quality = "OK" if detection_rate >= LOW_DETECTION else "LOW_DETECTION"
+    else:
+        quality = "NO_SEGMENT"
     return {
         "file": video_path.split("\\")[-1],
         "total": total,
-        "two": two, "one": one, "none": none,
-        "conflict": conflict,
-        "tensor_ok": tensor_ok,
+        "detection_rate": detection_rate,
+        "avg_size": avg_size,
+        "segments": [(s, l) for s, l in segs],
+        "seg_tensors": seg_tensors,
+        "quality": quality,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="CE-CSL 随机抽样链路验证")
+    parser = argparse.ArgumentParser(description="CE-CSL 随机抽样链路验证（段切分版）")
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--window", type=int, default=300)
+    parser.add_argument("--conf", type=float, default=0.3)
     args = parser.parse_args()
 
-    videos = sorted(glob.glob(
-        rf"E:\SignBridge\data\CE-CSL\video\{args.split}\*\*.mp4"))
+    videos = sorted(glob.glob(rf"E:\SignBridge\data\CE-CSL\video\{args.split}\*\*.mp4"))
     if not videos:
         print("未找到视频")
         return 1
@@ -88,21 +145,20 @@ def main() -> int:
 
     results = []
     for v in sample:
-        r = verify_one(v, args.window)
+        r = verify_one(v, args.window, args.conf)
         results.append(r)
-        pct_two = 100 * r["two"] / max(r["total"], 1)
-        print(f"{r['file']}: {r['total']:>3}帧 双手{pct_two:>3.0f}% "
-              f"单手{r['one']:>2} 无手{r['none']:>2} 冲突{r['conflict']:>2} "
-              f"张量{'OK' if r['tensor_ok'] else 'FAIL'}", flush=True)
+        longest = max((l for _, l in r["segments"]), default=0)
+        print(f"{r['file']}: 帧{r['total']:>3} 检测率{r['detection_rate']:.0%} "
+              f"bbox{10000 * r['avg_size']:>6.0f}e-4 段{r['seg_tensors']:>2}个 "
+              f"(最长{longest:>3}帧) [{r['quality']}]", flush=True)
 
     n = len(results)
-    ok = sum(1 for r in results if r["tensor_ok"])
-    two_total = sum(r["two"] for r in results)
-    total = sum(r["total"] for r in results)
-    conflict_total = sum(r["conflict"] for r in results)
-    print(f"\n汇总: {n} 个视频，张量构造成功 {ok}/{n}")
-    print(f"  双手帧占比 {100 * two_total / max(total, 1):.0f}%")
-    print(f"  handedness 冲突帧占比 {100 * conflict_total / max(two_total, 1):.1f}%")
+    ok = sum(1 for r in results if r["quality"] == "OK")
+    low = sum(1 for r in results if r["quality"] == "LOW_DETECTION")
+    noseg = sum(1 for r in results if r["quality"] == "NO_SEGMENT")
+    segs_total = sum(r["seg_tensors"] for r in results)
+    print(f"\n汇总: {n} 视频 → OK {ok} / LOW_DETECTION {low} / NO_SEGMENT {noseg}")
+    print(f"  提取手势段样本总数: {segs_total}")
     return 0
 
 
