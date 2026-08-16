@@ -2,12 +2,13 @@
 
 手语翻译项目 —— MediaPipe 关键点组件库（基础层）。
 
-当前版本（0.3.0）实现**手部关键点提取**（输入摄像头 / 视频文件 / 图片，输出每帧
+当前版本（0.4.0）实现**手部关键点提取**（输入摄像头 / 视频文件 / 图片，输出每帧
 0~N 只手的 21 个关键点，归一化坐标 + 米制 3D world 坐标，左右手判定，叠加可视化）
 与**时序序列缓冲**（帧间多手追踪、ID 生命周期、滑动窗口、腕点归一化，
-**特征增强匹配**：手形特征做跨位置丢失恢复，输出可直接喂 ST-GCN 的时序张量）。
+**特征增强匹配**：手形特征做跨位置丢失恢复，输出可直接喂 ST-GCN 的时序张量）
+与 **ST-GCN 模型组件**（可插拔 `SkeletonClassifier` 协议 + 参数化图卷积实现）。
 
-技术栈：Python · MediaPipe Tasks API · OpenCV · NumPy · PySide6 · PyTorch（后续）· ST-GCN（后续）
+技术栈：Python · MediaPipe Tasks API · OpenCV · NumPy · PySide6 · PyTorch · ST-GCN
 
 ## 安装
 
@@ -90,6 +91,27 @@ detector.close()
 
 传 `matcher=HungarianMatcher()` 或 `feature_extractor=None` 可退回纯位置模式。
 
+## ST-GCN 模型组件（0.4.0）
+
+骨架时序分类模型，消费时序缓冲输出（`HandSequence.data`，`(T,21,3)` 腕点归一化）：
+
+```python
+import torch
+from signbridge import STGCN, build_hand_graph
+
+adj = build_hand_graph(num_hands=1)        # 21 节点单图；num_hands=2 → 42 双手分块图
+model = STGCN(num_classes=10, adjacency=adj)  # 经典 9 层参数化
+
+x = torch.randn(2, 3, 64, 21)              # (N, C=xyz, T, V)
+logits = model(x)                          # (2, 10)
+pred = model.predict(x)                    # (2,) 类别索引
+```
+
+- 输入 `(N, C, T, V)`；`num_nodes` 由邻接矩阵推导（换姿态图无需改模型）
+- 模块化：`GraphConv`（图卷积 + 自适应图残差 B）/ `TemporalConv` / `STGCNBlock`（残差+BN）
+- **可插拔**：任何模型实现 `SkeletonClassifier` 协议（`forward` + `predict`）即可替换 ST-GCN
+- 训练管线（数据张量化、训练循环、数据集）为后续步骤
+
 ## CLI 演示工具
 
 ```bash
@@ -115,6 +137,8 @@ python -m signbridge.hands.cli --download-model                # 预下载模型
 | `signbridge.hands.sources` | `CameraSource(camera_id)` / `VideoSource(path)`（含 `meta`）/ `ImageSource(path, repeat=False)`；统一产出 `(frame, frame_index, timestamp_ms)` |
 | `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None)` 与 `draw_landmarks_depth(frame, hand_frame)`（左蓝右绿、深度明暗） |
 | `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother, feature_extractor)` |
+| `signbridge.core.graphs` | `build_adjacency` / `normalize_adjacency` / `build_block_diagonal_graph` / `build_hand_graph(num_hands=1\|2)`（图工具，姿态图扩展位） |
+| `signbridge.models` | `SkeletonClassifier` 协议（整模型级可插拔）+ `STGCN(num_classes, adjacency, channels, strides, kernel_size, adaptive, dropout)` |
 | `signbridge.hands.model` | `ensure_model()` / `cache_dir()` / `default_model_path()` |
 
 ## 手部关键点图谱（21 点）

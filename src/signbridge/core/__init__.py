@@ -6,6 +6,12 @@ from signbridge.core.features import (
     FeatureVerifier,
     HandShapeFeature,
 )
+from signbridge.core.graphs import (
+    build_adjacency,
+    build_block_diagonal_graph,
+    build_hand_graph,
+    normalize_adjacency,
+)
 from signbridge.core.landmarks import (
     HAND_CONNECTIONS,
     HAND_LANDMARK_NAMES,
@@ -32,6 +38,10 @@ __all__ = [
     "FeatureVerifier",
     "HandShapeFeature",
     "DistanceFeatureVerifier",
+    "build_adjacency",
+    "build_block_diagonal_graph",
+    "build_hand_graph",
+    "normalize_adjacency",
     "HandDescriptor",
     "HungarianMatcher",
     "FeatureHungarianMatcher",
