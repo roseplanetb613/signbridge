@@ -186,7 +186,8 @@ def _log_progress(split: str, done: int, total: int, start_time: float,
 def main() -> int:
     parser = argparse.ArgumentParser(description="CE-CSL 全量骨架段提取")
     parser.add_argument("--splits", nargs="+", default=["train", "dev", "test"])
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=3,
+                        help="进程数（16GB 内存机器建议 ≤3，防 OOM）")
     parser.add_argument("--out", type=str, default="data/dataset")
     parser.add_argument("--limit", type=int, default=0,
                         help="每 split 处理上限（0=全部，测试用）")
@@ -214,27 +215,39 @@ def main() -> int:
             continue
 
         start_time = time.monotonic()
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(_work, (v, split, all_meta[split])): v
-                       for v in pending}
-            for i, fut in enumerate(as_completed(futures), 1):
-                try:
-                    result = fut.result()
-                except Exception as exc:          # noqa: BLE001
-                    print(f"失败 {Path(futures[fut]).stem}: {exc}", flush=True)
-                    continue
-                np.savez_compressed(
-                    parts_dir / f"{split}-{result['video']}.npz",
-                    data=np.array(result["segments"], dtype=object),
-                    gloss=result["gloss"],
-                    translator=result["translator"],
-                    detection_rate=result["detection_rate"],
-                    avg_bbox=result["avg_bbox"],
-                    span=np.array([s["span"] for s in result["segments"]]),
-                )
-                if i % 50 == 0 or i == len(pending):
-                    print(f"[{split}] 进度 {i}/{len(pending)}", flush=True)
-                    _log_progress(split, i, len(pending), start_time, log_path)
+        # 分块处理：每块重建进程池，释放 worker 内存（避免长时间运行 OOM）
+        chunk_size = 400
+        chunks = [pending[i:i + chunk_size]
+                  for i in range(0, len(pending), chunk_size)]
+        done_in_chunk = 0
+        for chunk_idx, chunk in enumerate(chunks, 1):
+            with ProcessPoolExecutor(max_workers=args.workers) as pool:
+                futures = {pool.submit(_work, (v, split, all_meta[split])): v
+                           for v in chunk}
+                for i, fut in enumerate(as_completed(futures), 1):
+                    try:
+                        result = fut.result()
+                    except Exception as exc:          # noqa: BLE001
+                        print(f"失败 {Path(futures[fut]).stem}: {exc}",
+                              flush=True)
+                        continue
+                    np.savez_compressed(
+                        parts_dir / f"{split}-{result['video']}.npz",
+                        data=np.array(result["segments"], dtype=object),
+                        gloss=result["gloss"],
+                        translator=result["translator"],
+                        detection_rate=result["detection_rate"],
+                        avg_bbox=result["avg_bbox"],
+                        span=np.array([s["span"] for s in result["segments"]]),
+                    )
+                    done_in_chunk += 1
+                    if done_in_chunk % 50 == 0 or done_in_chunk == len(pending):
+                        print(f"[{split}] 进度 {done_in_chunk}/{len(pending)}",
+                              flush=True)
+                        _log_progress(split, done_in_chunk, len(pending),
+                                      start_time, log_path)
+            print(f"[{split}] 块 {chunk_idx}/{len(chunks)} 完成"
+                  f"（进程池已重建，内存已释放）", flush=True)
 
     # 合并 parts → split NPZ（hand + pose + roi 三文件，同一顺序对齐）
     vocab = Counter()
