@@ -121,6 +121,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", type=str, default="checkpoints")
@@ -154,7 +156,8 @@ def main() -> int:
     torch.manual_seed(args.seed)
     model = STGCNCTC(num_classes=len(vocab),
                      adjacency=build_hand_graph(num_hands=2)).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
+                                  weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=3)
 
@@ -167,6 +170,11 @@ def main() -> int:
     print(f"{'epoch':>5} {'train_loss':>10} {'dev_loss':>9} "
           f"{'dev_WER':>8} {'dev_acc':>7}")
     for epoch in range(1, args.epochs + 1):
+        # 学习率 warmup：前 warmup_epochs 个 epoch 线性升温到 base lr
+        if args.warmup_epochs > 0 and epoch <= args.warmup_epochs:
+            lr = args.lr * epoch / args.warmup_epochs
+            for g in optimizer.param_groups:
+                g["lr"] = lr
         model.train()
         total_loss = 0.0
         n_batch = 0
