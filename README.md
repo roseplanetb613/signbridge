@@ -133,7 +133,7 @@ python -m signbridge.hands.cli --download-model                # 预下载模型
 | `signbridge.core.matching` | `Matcher` 协议 v2（`HandDescriptor`）+ `Matching` + `HungarianMatcher`（纯位置）/ `FeatureHungarianMatcher`（分层：位置 + 特征恢复） |
 | `signbridge.core.features` | `FeatureExtractor` / `FeatureVerifier` 协议 + `HandShapeFeature`（210 维距离矩阵）/ `DistanceFeatureVerifier`（高斯核置信度） |
 | `signbridge.core.smoothing` | `LandmarkSmoother` 协议 + `OneEuroSmoother(min_cutoff, beta, d_cutoff)`（可插拔平滑） |
-| `signbridge.hands.detector` | `HandDetector(max_num_hands, min_detection_confidence, min_tracking_confidence, model_path=None)`；`detect(bgr_frame) -> HandFrame`；支持 with 语句 |
+| `signbridge.hands.detector` | `HandDetector(max_num_hands, min_detection_confidence, min_tracking_confidence, model_path=None, refine_roi=False, roi_target_size=256, roi_margin=0.35, candidate_confidence=0.15)`；`detect(bgr_frame) -> HandFrame`；支持 with 语句；`refine_roi` 两级候选检测改善远端小手识别 |
 | `signbridge.hands.sources` | `CameraSource(camera_id)` / `VideoSource(path)`（含 `meta`）/ `ImageSource(path, repeat=False)`；统一产出 `(frame, frame_index, timestamp_ms)` |
 | `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None)` 与 `draw_landmarks_depth(frame, hand_frame)`（左蓝右绿、深度明暗） |
 | `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother, feature_extractor)` |
