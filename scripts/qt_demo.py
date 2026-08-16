@@ -9,6 +9,7 @@ import sys
 import time
 
 import cv2
+import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -17,25 +18,36 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QVBoxLayout,
     QWidget,
 )
 
 from signbridge import (
     CameraSource,
+    DistanceFeatureVerifier,
     HandDetector,
     HandSequenceBuffer,
+    HandShapeFeature,
     OneEuroSmoother,
 )
 from signbridge.core.errors import SignBridgeError
 from signbridge.hands.draw import DEPTH_COLORS, draw_landmarks_depth
 
 
+def _seq_last_pts(seq):
+    """HandSequence 最后有效帧的 (21,3) 点（已腕点归一化，可直接提特征）。"""
+    idx = np.flatnonzero(seq.valid_mask)
+    if len(idx) == 0:
+        return None
+    return seq.data[idx[-1]]
+
+
 class TrackingWindow(QMainWindow):
-    """摄像头实时手部跟踪验证窗口。"""
+    """摄像头实时手部跟踪验证窗口（含特征提取可视化）。"""
 
     def __init__(self, camera_id: int, window_size: int) -> None:
         super().__init__()
-        self.setWindowTitle("SignBridge 手部跟踪验证")
+        self.setWindowTitle("SignBridge 手部跟踪验证（特征提取）")
         try:
             self._source = CameraSource(camera_id)
             self._detector = HandDetector(max_num_hands=2)
@@ -45,17 +57,27 @@ class TrackingWindow(QMainWindow):
         self._buffer = HandSequenceBuffer(
             window_size=window_size, smoother=OneEuroSmoother()
         )
+        self._feature = HandShapeFeature()
+        self._verifier = DistanceFeatureVerifier()
+        self._last_feature: dict[int, np.ndarray] = {}   # hand_id → 上一帧特征
 
         self._canvas = QLabel("正在打开摄像头…")
         self._canvas.setAlignment(Qt.AlignCenter)
         self._info = QLabel("")
-        self._info.setMinimumWidth(320)
+        self._info.setMinimumWidth(340)
         self._info.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._feature_map = QLabel("")
+        self._feature_map.setFixedSize(210, 60)
+        self._feature_map.setAlignment(Qt.AlignCenter)
 
         central = QWidget()
         layout = QHBoxLayout(central)
         layout.addWidget(self._canvas, 1)
-        layout.addWidget(self._info, 0)
+        side = QVBoxLayout()
+        side.addWidget(self._info)
+        side.addWidget(QLabel("特征热力图（210 维距离矩阵，每只手一行）"))
+        side.addWidget(self._feature_map)
+        layout.addLayout(side, 0)
         self.setCentralWidget(central)
 
         self._timer = QTimer(self)
@@ -83,7 +105,37 @@ class TrackingWindow(QMainWindow):
 
         self._update_fps()
         self._show_frame(canvas)
-        self._show_info(hand_frame, seqs)
+        confs = self._update_features(seqs)
+        self._show_info(hand_frame, seqs, confs)
+
+    def _update_features(self, seqs) -> dict[int, float]:
+        """每只手：当前帧特征 vs 上一帧特征 → 特征置信度（手形稳定度）。"""
+        confs: dict[int, float] = {}
+        for s in seqs:
+            pts = _seq_last_pts(s)
+            if pts is None:
+                continue
+            feat = self._feature.extract(pts)
+            last = self._last_feature.get(s.hand_id)
+            if last is not None:
+                confs[s.hand_id] = self._verifier.verify(last, feat)
+            self._last_feature[s.hand_id] = feat
+        # 热力图：每只手一行（210 → 14×15 网格），JET 伪彩
+        if seqs:
+            vecs = [self._last_feature.get(s.hand_id) for s in seqs]
+            vecs = [v for v in vecs if v is not None]
+            if vecs:
+                heat = np.stack(vecs)
+                heat = (heat - heat.min()) / max(heat.max() - heat.min(), 1e-9)
+                heat = (heat * 255).astype(np.uint8)
+                heat = cv2.applyColorMap(heat, cv2.COLORMAP_JET)
+                heat = cv2.resize(heat, (210, 20 * len(vecs)),
+                                  interpolation=cv2.INTER_NEAREST)
+                rgb = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+                self._feature_map.setPixmap(QPixmap.fromImage(img.copy()))
+        return confs
 
     def _draw_id_labels(self, canvas, hand_frame, seqs) -> None:
         for s in seqs:
@@ -115,7 +167,7 @@ class TrackingWindow(QMainWindow):
             self._fps_frames = 0
             self._fps_start = now
 
-    def _show_info(self, hand_frame, seqs) -> None:
+    def _show_info(self, hand_frame, seqs, confs) -> None:
         detected = "、".join(
             f"{h.handedness}({h.score:.2f})" for h in hand_frame.hands
         ) or "无"
@@ -127,8 +179,10 @@ class TrackingWindow(QMainWindow):
         ]
         for s in seqs:
             valid = int(s.valid_mask.sum())
+            conf = confs.get(s.hand_id)
+            conf_txt = f"特征稳定度 {conf:.2f}" if conf is not None else "特征待初始化"
             lines.append(
-                f"<b>id{s.hand_id}</b> {s.handedness}<br>"
+                f"<b>id{s.hand_id}</b> {s.handedness} · {conf_txt}<br>"
                 f"序列 {len(s.data)} 帧（有效 {valid}）"
             )
         self._info.setText("<br>".join(lines))
