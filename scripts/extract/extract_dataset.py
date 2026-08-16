@@ -118,7 +118,7 @@ def main() -> int:
             rf"E:\SignBridge\data\CE-CSL\video\{split}\*\*.mp4"))
         if args.limit:
             videos = videos[:args.limit]
-        done = {p.stem for p in parts_dir.glob(f"{split}-*.npz")}
+        done = {p.stem[len(split) + 1:] for p in parts_dir.glob(f"{split}-*.npz")}
         pending = [v for v in videos if Path(v).stem not in done]
         print(f"[{split}] 共 {len(videos)}，已完成 {len(done)}，"
               f"待处理 {len(pending)}", flush=True)
