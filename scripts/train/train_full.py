@@ -211,6 +211,8 @@ def main() -> int:
                         help="--eval-only 时评估的 split")
     parser.add_argument("--show-examples", type=int, default=5,
                         help="--eval-only 时打印解码示例数")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="从 checkpoint 恢复训练（权重/优化器/epoch）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -299,6 +301,23 @@ def main() -> int:
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=3)
 
+    # --resume：恢复权重/优化器/调度器/epoch/best_wer
+    start_epoch = 1
+    best_wer = 1.0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device)
+        if list(ckpt.get("vocab", [])) != vocab:
+            print(f"⚠️ checkpoint 词表与当前不一致，仅加载模型权重")
+        model.load_state_dict(ckpt["state_dict"])
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        best_wer = float(ckpt.get("best_wer", 1.0))
+        print(f"从 {args.resume} 恢复：epoch {start_epoch} 起，"
+              f"best_wer 初始 {best_wer:.3f}")
+
     train_ds = SkeletonDataset(train_samples, y_train, ylen_train,
                                args.target_t, augment=args.augment)
     # num_workers=0：脚本式运行 + Windows spawn 的兼容性要求
@@ -311,10 +330,9 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    best_wer = 1.0
     print(f"{'epoch':>5} {'train_loss':>10} {'dev_loss':>9} "
           f"{'dev_WER':>8} {'dev_acc':>7}")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # 学习率 warmup：前 warmup_epochs 个 epoch 线性升温到 base lr
         if args.warmup_epochs > 0 and epoch <= args.warmup_epochs:
             lr = args.lr * epoch / args.warmup_epochs
@@ -349,7 +367,10 @@ def main() -> int:
             torch.save({"state_dict": model.state_dict(),
                         "vocab": vocab,
                         "config": vars(args),
-                        "best_wer": best_wer},
+                        "best_wer": best_wer,
+                        "epoch": epoch,
+                        "optimizer_state": optimizer.state_dict(),
+                        "scheduler_state": scheduler.state_dict()},
                        out_dir / "best.pt")
             suffix = " *"
         else:
