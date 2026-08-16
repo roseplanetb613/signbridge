@@ -112,6 +112,23 @@ pred = model.predict(x)                    # (2,) 类别索引
 - **可插拔**：任何模型实现 `SkeletonClassifier` 协议（`forward` + `predict`）即可替换 ST-GCN
 - 训练管线（数据张量化、训练循环、数据集）为后续步骤
 
+## CTC 连续手语训练（0.5.0 链路验证）
+
+CE-CSL 是连续手语句子（无帧级时间戳），用 CTC 对齐词序列与时间步：
+
+```python
+import torch
+from signbridge import STGCNCTC, build_hand_graph
+
+model = STGCNCTC(num_classes=词表大小, adjacency=build_hand_graph(num_hands=2))
+x = torch.randn(2, 3, 128, 42)          # (N, C, T, V)
+logits = model(x)                        # (N, T'=32, K+1)，0=blank
+lp = model.log_probs(x)                  # (T', N, K+1) log-softmax
+pred = model.decode(logits)              # [[词id...], ...] 贪心解码
+```
+
+训练：`python scripts/train_ctc.py`（小样本链路验证）。全量提取与正式训练为后续步骤。
+
 ## CLI 演示工具
 
 ```bash
@@ -138,7 +155,7 @@ python -m signbridge.hands.cli --download-model                # 预下载模型
 | `signbridge.hands.draw` | `draw_landmarks(frame, hand_frame, color=None)` 与 `draw_landmarks_depth(frame, hand_frame)`（左蓝右绿、深度明暗） |
 | `signbridge.hands.sequence` | `HandSequence`（T,21,3 腕点归一化 + valid_mask）与 `HandSequenceBuffer(window_size, max_lost_frames, matcher, coordinate, smoother, feature_extractor)` |
 | `signbridge.core.graphs` | `build_adjacency` / `normalize_adjacency` / `build_block_diagonal_graph` / `build_hand_graph(num_hands=1\|2)`（图工具，姿态图扩展位） |
-| `signbridge.models` | `SkeletonClassifier` 协议（整模型级可插拔）+ `STGCN(num_classes, adjacency, channels, strides, kernel_size, adaptive, dropout)` |
+| `signbridge.models` | `SkeletonClassifier` 协议（整模型级可插拔）+ `STGCN(num_classes, adjacency, channels, strides, kernel_size, adaptive, dropout)` + `STGCNCTC`（CTC 帧级输出，连续手语识别） |
 | `signbridge.hands.model` | `ensure_model()` / `cache_dir()` / `default_model_path()` |
 
 ## 手部关键点图谱（21 点）

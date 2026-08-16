@@ -1,6 +1,6 @@
 """SignBridge: 手语翻译项目 —— MediaPipe 关键点组件库。"""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from signbridge.core.errors import SignBridgeError
 from signbridge.core.features import (
@@ -25,6 +25,7 @@ from signbridge.hands.sequence import HandSequence, HandSequenceBuffer
 from signbridge.hands.sources import CameraSource, ImageSource, VideoSource
 from signbridge.models.protocol import SkeletonClassifier
 from signbridge.models.stgcn import STGCN
+from signbridge.models.stgcn_ctc import STGCNCTC
 
 __all__ = [
     "__version__",
@@ -44,6 +45,7 @@ __all__ = [
     "build_hand_graph",
     "SkeletonClassifier",
     "STGCN",
+    "STGCNCTC",
     "HandDetector",
     "draw_landmarks",
     "HandSequence",
