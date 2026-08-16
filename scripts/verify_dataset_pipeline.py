@@ -1,11 +1,13 @@
 """真实数据集小样本链路验证：视频 → 检测 → 追踪缓冲 → 双手张量 → ST-GCN 前向。
 
-用法: python scripts/verify_dataset_pipeline.py <video_path> [--window N]
+双手分块规则（方案 B）：优先 handedness（Left→块0 / Right→块1），
+handedness 冲突（双同侧）时按画面 x 位置（左侧→块0，右侧→块1）。
+
+用法: python scripts/verify_dataset_pipeline.py <video_path>
 """
 
 import argparse
 import sys
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -20,24 +22,26 @@ from signbridge import (
 )
 
 
-def align_two_hands(left, right, window: int):
-    """按 frame_indices 对齐两只手的序列 → (T, 42, 3) 张量。
+def classify_two_hands(hand_a, hand_b):
+    """方案 B 分块：返回 (块0 的手, 块1 的手)。"""
+    ha, hb = hand_a, hand_b
+    if ha.handedness != hb.handedness:
+        if ha.handedness == "Left":
+            return ha, hb
+        return hb, ha
+    # handedness 冲突：按画面 x 位置（左侧 → 块 0）
+    xa = ha.landmarks[0].x
+    xb = hb.landmarks[0].x
+    if xa <= xb:
+        return ha, hb
+    return hb, ha
 
-    左手块 0-20、右手块 21-41（与 build_hand_graph(num_hands=2) 分块一致）。
-    某帧某手缺失 → 该行 NaN（由调用方决定有效段）。
-    """
-    li = left.frame_indices
-    ri = right.frame_indices
-    lo = {int(f): i for i, f in enumerate(li)}
-    ro = {int(f): i for i, f in enumerate(ri)}
-    common = sorted(set(lo) & set(ro))
-    if not common:
-        return None
-    t = np.full((len(common), 42, 3), np.nan, dtype=np.float32)
-    for k, fidx in enumerate(common):
-        t[k, :21, :] = left.data[lo[fidx]]
-        t[k, 21:, :] = right.data[ro[fidx]]
-    return t
+
+def to_normalized(hand):
+    """腕点归一化 (21,3)（world 米制坐标）。"""
+    lms = hand.world_landmarks
+    pts = np.array([[lm.x, lm.y, lm.z] for lm in lms], dtype=np.float32)
+    return pts - pts[0]
 
 
 def main() -> int:
@@ -52,40 +56,51 @@ def main() -> int:
         coordinate="world",
         smoother=OneEuroSmoother(),
     )
+
+    rows = []            # (frame_idx, 42x3)
+    two_hand_frames = 0
+    one_hand_frames = 0
+    no_hand_frames = 0
+    conflict_frames = 0  # handedness 冲突（双同侧）帧数
     total_frames = 0
-    final = ()
+
     with HandDetector(max_num_hands=2) as detector:
-        for frame, _, _ in src:
-            final = buf.update(detector.detect(frame))
+        for frame_index, (frame, _, _) in enumerate(src):
+            hf = detector.detect(frame)
+            buf.update(hf)
             total_frames += 1
+            hands = list(hf.hands)
+            if len(hands) == 2:
+                two_hand_frames += 1
+                if hands[0].handedness == hands[1].handedness:
+                    conflict_frames += 1
+                b0, b1 = classify_two_hands(hands[0], hands[1])
+                row = np.full((42, 3), np.nan, dtype=np.float32)
+                row[:21] = to_normalized(b0)
+                row[21:] = to_normalized(b1)
+                rows.append((frame_index, row))
+            elif len(hands) == 1:
+                one_hand_frames += 1
+            else:
+                no_hand_frames += 1
     src.close()
 
-    by_hand = {s.handedness: s for s in final}
+    print(f"video frames: {total_frames}")
+    print(f"  two-hand: {two_hand_frames} ({100 * two_hand_frames / total_frames:.0f}%)  "
+          f"one-hand: {one_hand_frames}  no-hand: {no_hand_frames}")
+    if two_hand_frames:
+        print(f"  handedness 冲突帧（双同侧，按位置分块）: "
+              f"{conflict_frames} ({100 * conflict_frames / two_hand_frames:.0f}%)")
 
-    print(f"video frames processed: {total_frames}")
-    for s in final:
-        valid = int(s.valid_mask.sum())
-        print(f"  id{s.hand_id} {s.handedness}: window={len(s.data)} valid={valid} "
-              f"({100 * valid / len(s.data):.0f}%)")
-
-    left = by_hand.get("Left")
-    right = by_hand.get("Right")
-    if left is None or right is None:
-        print("需要双手都在场才能拼 42 节点张量（当前缺一只手）")
+    if not rows:
+        print("无双手同帧，无法构造 42 节点张量")
         return 1
 
-    tensor = align_two_hands(left, right, args.window)
-    if tensor is None:
-        print("双手时间轴无重叠帧")
-        return 1
+    tensor = np.stack([r for _, r in rows])           # (T, 42, 3)
+    valid = ~np.isnan(tensor).any(axis=(1, 2))
+    tensor = tensor[valid]
+    print(f"aligned tensor: {tensor.shape} (T, 42, 3)，有效行 {valid.sum()}/{len(valid)}")
 
-    # 有效段截取（全有效的连续段）
-    valid_rows = ~np.isnan(tensor).any(axis=(1, 2))
-    tensor = tensor[valid_rows]
-    print(f"aligned tensor: {tensor.shape} (T, 42, 3)，NaN 行已剔除 "
-          f"({valid_rows.sum()}/{len(valid_rows)} 行有效)")
-
-    # → (C, T, V)
     x = torch.from_numpy(tensor).permute(2, 0, 1).unsqueeze(0).float()
     print(f"ST-GCN input: {tuple(x.shape)} (N=1, C=3, T, V=42)")
 
