@@ -48,9 +48,10 @@ class HandDetector:
     无帧间历史状态；仅维护自增帧计数与单调时钟时间戳（时序缓冲是后续步骤职责）。
     支持 with 语句；close() 释放底层资源。
 
-    refine_roi=True 时启用 ROI 放大精化（改善小手/远端手部识别）：
-    全图检测定位 → 裁剪手部包围盒（含 margin）→ 放大重检测 → 精细关键点换算回原图；
-    第二遍失败时回退第一遍结果。
+    refine_roi=True 时启用两级候选检测（改善小手/远端手部识别）：
+    第一遍用低阈值（candidate_confidence）全图找候选手（找回漏检），
+    对每个候选裁剪 ROI 放大后用正常阈值确认（放大后检测命中率高、关键点精细）；
+    确认失败视为噪声丢弃。检测率提升而不引入低置信度噪声。
     """
 
     def __init__(
@@ -62,6 +63,7 @@ class HandDetector:
         refine_roi: bool = False,
         roi_target_size: int = 256,
         roi_margin: float = 0.35,
+        candidate_confidence: float = 0.15,
     ) -> None:
         if max_num_hands not in _MAX_HANDS_ALLOWED:
             raise InvalidArgumentError(
@@ -84,6 +86,12 @@ class HandDetector:
         self.refine_roi = refine_roi
         self._roi_target_size = roi_target_size
         self._roi_margin = roi_margin
+        self._candidate_landmarker = None
+        if refine_roi:
+            self._candidate_landmarker = _create_landmarker(
+                model_path, max_num_hands, candidate_confidence,
+                min_tracking_confidence,
+            )
         self._closed = False
         self._frame_index = 0
 
@@ -94,18 +102,21 @@ class HandDetector:
         # OpenCV 帧是 BGR，MediaPipe SRGB 期望 RGB —— 通道顺序错误会导致检测不到手
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect(image)
-        if self.refine_roi and result.hand_landmarks:
+        if self.refine_roi:
             fh, fw = frame.shape[:2]
-            hands = tuple(
-                self._refine_hand(frame, fw, fh, h, w, c)
-                for h, w, c in zip(
-                    result.hand_landmarks,
-                    result.hand_world_landmarks,
-                    result.handedness,
-                )
-            )
+            cand = self._candidate_landmarker.detect(image)
+            hands = []
+            for h, w, c in zip(
+                cand.hand_landmarks,
+                cand.hand_world_landmarks,
+                cand.handedness,
+            ):
+                refined = self._refine_hand(frame, fw, fh, h, w, c)
+                if refined is not None:      # 确认失败 → 丢弃噪声候选
+                    hands.append(refined)
+            hands = tuple(hands)
         else:
+            result = self._landmarker.detect(image)
             hands = tuple(
                 _to_hand(h, w, c)
                 for h, w, c in zip(
@@ -123,13 +134,13 @@ class HandDetector:
         return hand_frame
 
     def _refine_hand(self, frame, fw, fh, landmarks, world_landmarks, handedness):
-        """ROI 放大重检测一只手；失败回退第一遍结果。"""
+        """候选手 ROI 放大后用正常阈值确认；失败返回 None（丢弃）。"""
         xs = [lm.x for lm in landmarks]
         ys = [lm.y for lm in landmarks]
         bw = (max(xs) - min(xs)) * fw
         bh = (max(ys) - min(ys)) * fh
         if bw < 8 or bh < 8:
-            return _to_hand(landmarks, world_landmarks, handedness)
+            return None
         mx = bw * self._roi_margin
         my = bh * self._roi_margin
         x0 = max(int(min(xs) * fw - mx), 0)
@@ -137,7 +148,7 @@ class HandDetector:
         y0 = max(int(min(ys) * fh - my), 0)
         y1 = min(int(max(ys) * fh + my), fh)
         if x1 - x0 < 8 or y1 - y0 < 8:
-            return _to_hand(landmarks, world_landmarks, handedness)
+            return None
         roi = frame[y0:y1, x0:x1]
         scale = self._roi_target_size / max(x1 - x0, y1 - y0)
         rw = max(int((x1 - x0) * scale), 8)
@@ -145,9 +156,9 @@ class HandDetector:
         resized = cv2.resize(roi, (rw, rh), interpolation=cv2.INTER_CUBIC)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        res = self._landmarker.detect(img)
+        res = self._landmarker.detect(img)     # 正常阈值确认
         if not res.hand_landmarks:
-            return _to_hand(landmarks, world_landmarks, handedness)
+            return None
         lms2 = res.hand_landmarks[0]
         wl = (
             res.hand_world_landmarks[0]
