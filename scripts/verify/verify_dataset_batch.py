@@ -24,48 +24,14 @@ from signbridge import (
     VideoSource,
     build_hand_graph,
 )
-from verify_dataset_pipeline import classify_two_hands, to_normalized
+from signbridge.core.segmentation import extract_segments
+from signbridge.hands.sequence import classify_two_hands, to_normalized
 
 MODEL = STGCN(num_classes=100, adjacency=build_hand_graph(num_hands=2))
 MODEL.eval()
 
 MIN_SEGMENT = 9      # ST-GCN kernel_size
 LOW_DETECTION = 0.3  # 检测率阈值
-
-
-def extract_segments(valid: np.ndarray, min_len: int, merge_gap: int = 2) -> list[tuple[int, int]]:
-    """连续有效段提取：返回 [(start, length), ...]。
-
-    merge_gap: 有效段之间 ≤ merge_gap 帧的缝隙合并（容忍偶发漏检）。
-    """
-    n = len(valid)
-    if n == 0:
-        return []
-    starts, ends = [], []
-    in_seg = False
-    for i in range(n):
-        if valid[i] and not in_seg:
-            starts.append(i)
-            in_seg = True
-        elif not valid[i] and in_seg:
-            ends.append(i)
-            in_seg = False
-    if in_seg:
-        ends.append(n)
-    segs = []
-    cur_start, cur_end = None, None
-    for s, e in zip(starts, ends):
-        if cur_start is None:
-            cur_start, cur_end = s, e
-        elif s - cur_end <= merge_gap:      # 缝隙 ≤ gap → 合并
-            cur_end = e
-        else:
-            if cur_end - cur_start >= min_len:
-                segs.append((cur_start, cur_end - cur_start))
-            cur_start, cur_end = s, e
-    if cur_start is not None and cur_end - cur_start >= min_len:
-        segs.append((cur_start, cur_end - cur_start))
-    return segs
 
 
 def verify_one(video_path: str, window: int, conf: float) -> dict:

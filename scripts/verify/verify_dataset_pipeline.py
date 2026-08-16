@@ -20,28 +20,7 @@ from signbridge import (
     VideoSource,
     build_hand_graph,
 )
-
-
-def classify_two_hands(hand_a, hand_b):
-    """方案 B 分块：返回 (块0 的手, 块1 的手)。"""
-    ha, hb = hand_a, hand_b
-    if ha.handedness != hb.handedness:
-        if ha.handedness == "Left":
-            return ha, hb
-        return hb, ha
-    # handedness 冲突：按画面 x 位置（左侧 → 块 0）
-    xa = ha.landmarks[0].x
-    xb = hb.landmarks[0].x
-    if xa <= xb:
-        return ha, hb
-    return hb, ha
-
-
-def to_normalized(hand):
-    """腕点归一化 (21,3)（world 米制坐标）。"""
-    lms = hand.world_landmarks
-    pts = np.array([[lm.x, lm.y, lm.z] for lm in lms], dtype=np.float32)
-    return pts - pts[0]
+from signbridge.hands.sequence import classify_two_hands, to_normalized
 
 
 def main() -> int:

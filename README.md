@@ -127,7 +127,9 @@ lp = model.log_probs(x)                  # (T', N, K+1) log-softmax
 pred = model.decode(logits)              # [[词id...], ...] 贪心解码
 ```
 
-训练：`python scripts/train_ctc.py`（小样本链路验证）。全量提取与正式训练为后续步骤。
+训练：`python scripts/train/train_ctc.py`（小样本链路验证）、
+`python scripts/train/train_full.py`（正式训练，GPU + WER 评估）。
+全量提取：`python scripts/extract/extract_dataset.py`。全量正式训练为后续步骤。
 
 ## CLI 演示工具
 

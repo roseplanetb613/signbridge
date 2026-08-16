@@ -20,8 +20,8 @@ from pathlib import Path
 import numpy as np
 
 from signbridge import HandDetector, VideoSource
-from verify_dataset_batch import extract_segments
-from verify_dataset_pipeline import classify_two_hands, to_normalized
+from signbridge.core.segmentation import extract_segments
+from signbridge.hands.sequence import classify_two_hands, to_normalized
 
 PUNCT = set("。，？！、；：""''（）《》")
 MIN_SEGMENT = 9
