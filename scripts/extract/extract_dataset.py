@@ -13,6 +13,7 @@ import csv
 import glob
 import json
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -168,6 +169,20 @@ def _work(args_tuple):
     return process_video(video_path, split, meta)
 
 
+def _log_progress(split: str, done: int, total: int, start_time: float,
+                  log_path: Path) -> None:
+    """进度持久化：追加日志行（含时间戳与 ETA），供事后查看。"""
+    import time as _time
+
+    elapsed = _time.monotonic() - start_time
+    per = elapsed / max(done, 1)
+    eta_min = per * (total - done) / 60
+    line = (f"[{_time.strftime('%H:%M:%S')}] {split}: {done}/{total} "
+            f"({100 * done / max(total, 1):.0f}%) ETA {eta_min:.0f}min\n")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="CE-CSL 全量骨架段提取")
     parser.add_argument("--splits", nargs="+", default=["train", "dev", "test"])
@@ -182,6 +197,7 @@ def main() -> int:
     parts_dir.mkdir(parents=True, exist_ok=True)
 
     all_meta = {s: load_meta(s) for s in args.splits}
+    log_path = out_dir / "extract.log"
     for split in args.splits:
         videos = sorted(glob.glob(
             rf"E:\SignBridge\data\CE-CSL\video\{split}\*\*.mp4"))
@@ -191,9 +207,13 @@ def main() -> int:
         pending = [v for v in videos if Path(v).stem not in done]
         print(f"[{split}] 共 {len(videos)}，已完成 {len(done)}，"
               f"待处理 {len(pending)}", flush=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {split} 开始："
+                    f"已完成 {len(done)}，待处理 {len(pending)}\n")
         if not pending:
             continue
 
+        start_time = time.monotonic()
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(_work, (v, split, all_meta[split])): v
                        for v in pending}
@@ -214,6 +234,7 @@ def main() -> int:
                 )
                 if i % 50 == 0 or i == len(pending):
                     print(f"[{split}] 进度 {i}/{len(pending)}", flush=True)
+                    _log_progress(split, i, len(pending), start_time, log_path)
 
     # 合并 parts → split NPZ（hand + pose + roi 三文件，同一顺序对齐）
     vocab = Counter()
