@@ -39,8 +39,8 @@ class HandSequence:
 
 class _Track:
     __slots__ = ("hand_id", "handedness", "centroid", "lost_count",
-                 "smoother", "last_feature", "slots", "timestamps",
-                 "frame_indices")
+                 "smoother", "last_feature", "flip_count", "slots",
+                 "timestamps", "frame_indices")
 
     def __init__(self, hand_id, handedness, centroid, smoother):
         self.hand_id = hand_id
@@ -49,6 +49,7 @@ class _Track:
         self.lost_count = 0
         self.smoother = smoother
         self.last_feature = None
+        self.flip_count = 0
         self.slots: deque = deque()
         self.timestamps: deque = deque()
         self.frame_indices: deque = deque()
@@ -67,6 +68,9 @@ class HandSequenceBuffer:
         smoother: 可插拔平滑器实例（内部按手 deepcopy）；None 不平滑
         feature_extractor: 可插拔特征提取器（默认 HandShapeFeature；
                            供匹配器做跨位置恢复判定；None 关闭特征）
+        handedness_debounce: 左右手标签防抖帧数（默认 5）——判定相反需
+                            连续 ≥ 该帧数才切换标签，抑制 MediaPipe 对手形
+                            的偶发左右误判；0 关闭防抖逐帧跟随
     """
 
     def __init__(
@@ -78,17 +82,21 @@ class HandSequenceBuffer:
         coordinate: str = "world",
         smoother: LandmarkSmoother | None = None,
         feature_extractor: FeatureExtractor | None = None,
+        handedness_debounce: int = 5,
     ) -> None:
         if window_size <= 0:
             raise ValueError("window_size 必须 > 0")
         if max_lost_frames < 0:
             raise ValueError("max_lost_frames 必须 >= 0")
+        if handedness_debounce < 0:
+            raise ValueError("handedness_debounce 必须 >= 0")
         if coordinate not in ("world", "image"):
             raise ValueError("coordinate 必须是 'world' 或 'image'")
         self.window_size = window_size
         self.max_hands = max_hands
         self.max_lost_frames = max_lost_frames
         self.coordinate = coordinate
+        self.handedness_debounce = handedness_debounce
         self._matcher = (
             matcher if matcher is not None else FeatureHungarianMatcher()
         )
@@ -137,7 +145,14 @@ class HandSequenceBuffer:
             track = track_list[pi]
             handedness, centroid, pts, feature = cur[ci]
             track.lost_count = 0
-            track.handedness = handedness
+            # handedness 防抖：判定相反需连续 ≥ debounce 帧才切换标签
+            if handedness != track.handedness:
+                track.flip_count += 1
+                if track.flip_count >= self.handedness_debounce:
+                    track.handedness = handedness
+                    track.flip_count = 0
+            else:
+                track.flip_count = 0
             track.centroid = centroid
             track.last_feature = feature
             self._append_valid(track, pts, ts)
