@@ -27,6 +27,8 @@ def main() -> int:
                         default="data/recordings/record")
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--refine", action="store_true", help="开启两级候选检测")
+    parser.add_argument("--preview", action="store_true",
+                        help="显示实时预览窗口（叠加画面），按 q/Esc 提前结束")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -64,8 +66,15 @@ def main() -> int:
         except StopIteration:
             break
         hf = detector.detect(frame)
+        overlay = draw_landmarks_depth(frame, hf)
         raw_writer.write(frame)
-        overlay_writer.write(draw_landmarks_depth(frame, hf))
+        overlay_writer.write(overlay)
+
+        if args.preview:
+            cv2.imshow("SignBridge 录制预览（q/Esc 提前结束）", overlay)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
 
         frame_indices.append(fidx)
         timestamps.append(hf.timestamp_ms)
@@ -89,6 +98,8 @@ def main() -> int:
     detector.close()
     raw_writer.release()
     overlay_writer.release()
+    if args.preview:
+        cv2.destroyAllWindows()
 
     np.savez_compressed(
         npz_path,
