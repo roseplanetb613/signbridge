@@ -16,13 +16,76 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 
 from signbridge import STGCNCTC, build_hand_graph
 
 PUNCT = set("。，？！、；：""''（）《》")
 MIN_DETECTION = 0.3     # 质量过滤：检测率下限
 MAX_T = 256             # 段长上限（截断）
+
+
+def time_augment(data: np.ndarray, target_t: int) -> np.ndarray:
+    """时间增强：长段随机窗口裁剪（等效时间缩放）。"""
+    t = len(data)
+    if t > target_t:
+        start = np.random.randint(0, t - target_t + 1)
+        return data[start:start + target_t]
+    if t < target_t:
+        reps = int(np.ceil(target_t / t))
+        return np.tile(data, (reps, 1, 1))[:target_t]
+    return data
+
+
+def space_augment(data: np.ndarray, noise: float = 0.01,
+                  rot: float = 0.1, scale_range=(0.9, 1.1)) -> np.ndarray:
+    """空间增强：随机缩放 + 绕腕点小角度旋转 + 高斯关节噪声。"""
+    s = np.random.uniform(*scale_range)
+    data = data * s
+    theta = np.random.uniform(-rot, rot)
+    c, sn = np.cos(theta), np.sin(theta)
+    rot_z = np.array([[c, -sn, 0], [sn, c, 0], [0, 0, 1]], dtype=np.float32)
+    data = data @ rot_z.T
+    data = data + np.random.normal(0, noise, data.shape).astype(np.float32)
+    return data
+
+
+def align_length(data: np.ndarray, target_t: int) -> np.ndarray:
+    """无增强的对齐：长段截断、短段重复填充。"""
+    t = len(data)
+    if t >= target_t:
+        return data[:target_t]
+    reps = int(np.ceil(target_t / t))
+    return np.tile(data, (reps, 1, 1))[:target_t]
+
+
+class SkeletonDataset(Dataset):
+    """骨架段数据集（可选在线增强）。
+
+    samples: [(T,42,3)]；targets: (N, L) padded 词 id；target_lengths: (N,)。
+    """
+
+    def __init__(self, samples, targets, target_lengths, target_t: int,
+                 augment: bool = False):
+        self.samples = samples
+        self.targets = targets
+        self.target_lengths = target_lengths
+        self.target_t = target_t
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, i):
+        data = np.asarray(self.samples[i], dtype=np.float32)
+        if self.augment:
+            data = time_augment(data, self.target_t)
+            data = space_augment(data)
+        else:
+            data = align_length(data, self.target_t)
+        x = np.transpose(data, (2, 0, 1))       # (3, T, 42)
+        return (torch.from_numpy(x).float(),
+                self.targets[i], self.target_lengths[i])
 
 
 def gloss_words(gloss: str) -> list[str]:
@@ -71,7 +134,6 @@ def load_split(path: Path, vocab_idx: dict | None, min_det: float,
             if d["detection_rates"][i] >= min_det]
     samples = [d["data"][i] for i in keep]
     glosses = [str(d["glosses"][i]) for i in keep]
-    x = to_tensor_batch(samples, target_t)
 
     targets, target_lengths = [], []
     for g in glosses:
@@ -82,7 +144,7 @@ def load_split(path: Path, vocab_idx: dict | None, min_det: float,
     targets_pad = torch.zeros(len(targets), max_len, dtype=torch.long)
     for i, ids in enumerate(targets):
         targets_pad[i, :len(ids)] = torch.tensor(ids)
-    return x, targets_pad, torch.tensor(target_lengths), glosses
+    return (samples, targets_pad, torch.tensor(target_lengths), glosses)
 
 
 def decode_and_wer(model, x, targets, target_lengths, vocab, device,
@@ -128,6 +190,8 @@ def main() -> int:
     parser.add_argument("--out-dir", type=str, default="checkpoints")
     parser.add_argument("--beam-width", type=int, default=5,
                         help="评估解码束宽（1=贪心）")
+    parser.add_argument("--augment", action="store_true",
+                        help="开启训练在线增强（时间随机窗口 + 空间扰动）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -143,11 +207,11 @@ def main() -> int:
     vocab_idx = {w: i + 1 for i, w in enumerate(vocab)}
     print(f"词表 {len(vocab)} 词（0=blank）")
 
-    x_train, y_train, ylen_train, _ = load_split(
+    train_samples, y_train, ylen_train, _ = load_split(
         train_path, vocab_idx, MIN_DETECTION, args.target_t)
-    x_dev, y_dev, ylen_dev, _ = load_split(
+    dev_samples, y_dev, ylen_dev, _ = load_split(
         dev_path, vocab_idx, MIN_DETECTION, args.target_t)
-    print(f"train {len(x_train)} 段 / dev {len(x_dev)} 段")
+    print(f"train {len(train_samples)} 段 / dev {len(dev_samples)} 段")
 
     device = ("cuda" if torch.cuda.is_available() else "cpu") \
         if args.device == "auto" else args.device
@@ -161,8 +225,15 @@ def main() -> int:
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=3)
 
-    dataset = TensorDataset(x_train, y_train, ylen_train)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    train_ds = SkeletonDataset(train_samples, y_train, ylen_train,
+                               args.target_t, augment=args.augment)
+    # num_workers=0：脚本式运行 + Windows spawn 的兼容性要求
+    loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                        num_workers=0)
+    # dev 用固定对齐（无增强）全量张量化供评估
+    x_dev = to_tensor_batch(
+        [align_length(np.asarray(s, dtype=np.float32), args.target_t)
+         for s in dev_samples], args.target_t)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
