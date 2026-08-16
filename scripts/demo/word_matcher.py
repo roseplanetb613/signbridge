@@ -127,11 +127,15 @@ def run_camera(words, mat, camera_id: int, topk: int,
         print(f"摄像头错误: {exc}", flush=True)
         return
     print("摄像头已打开，开始识别（q/Esc 退出）", flush=True)
-    history = collections.deque(maxlen=15)   # manual 模式：帧特征窗口
-    seg_rows = collections.deque(maxlen=15)  # stgcn 模式：骨架行窗口
+    window = 45                      # 1.5s @30fps，覆盖手势主体
+    stride = 5                       # 每 5 帧识别一次（省算力）
+    history = collections.deque(maxlen=window)   # manual：帧特征窗口
+    seg_rows = collections.deque(maxlen=window)  # stgcn：骨架行窗口
+    frame_count = 0
     with HandDetector(max_num_hands=2,
                       min_detection_confidence=0.3) as detector:
         for frame, _, _ in src:
+            frame_count += 1
             hf = detector.detect(frame)
             row = hands_to_row(hf.hands)
             if row is not None:
@@ -146,7 +150,7 @@ def run_camera(words, mat, camera_id: int, topk: int,
             canvas = draw_landmarks_depth(frame, hf)
             q = None
             if embed_fn is not None:
-                if len(seg_rows) >= 15:
+                if len(seg_rows) >= 30 and frame_count % stride == 0:
                     q = embed_fn(np.stack(seg_rows))
             elif history:
                 q = np.mean(np.stack(history), axis=0)
