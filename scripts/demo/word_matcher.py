@@ -54,22 +54,68 @@ def query_video(video_path: str, detector) -> np.ndarray:
     rows = []
     for frame_index, (frame, _, _) in enumerate(VideoSource(video_path)):
         hf = detector.detect(frame)
-        hands = list(hf.hands)
-        if len(hands) == 2:
-            b0, b1 = classify_two_hands(hands[0], hands[1])
-            from signbridge.hands.sequence import to_normalized
-            row = np.full((42, 3), np.nan, dtype=np.float32)
-            row[:21] = to_normalized(b0)
-            row[21:] = to_normalized(b1)
-            rows.append(row)
-        elif len(hands) == 1:
-            from signbridge.hands.sequence import to_normalized
-            row = np.zeros((42, 3), dtype=np.float32)
-            row[:21] = to_normalized(hands[0])
+        row = hands_to_row(hf.hands)
+        if row is not None:
             rows.append(row)
     if not rows:
         return None
     return segment_feature(np.stack(rows))
+
+
+def hands_to_row(hands) -> np.ndarray | None:
+    """检测手列表 → 42 节点行（方案 B 分块 + 单手零填充）；无手返回 None。"""
+    from signbridge.hands.sequence import to_normalized
+
+    if len(hands) == 2:
+        b0, b1 = classify_two_hands(hands[0], hands[1])
+        row = np.full((42, 3), np.nan, dtype=np.float32)
+        row[:21] = to_normalized(b0)
+        row[21:] = to_normalized(b1)
+        return row
+    if len(hands) == 1:
+        row = np.zeros((42, 3), dtype=np.float32)
+        row[:21] = to_normalized(hands[0])
+        return row
+    return None
+
+
+def run_camera(words, mat, camera_id: int, topk: int) -> None:
+    """摄像头实时词识别：滑动窗口特征平均 → top-k 词叠加显示。"""
+    import collections
+
+    import cv2
+
+    from signbridge import CameraSource, HandDetector
+    from signbridge.hands.draw import draw_landmarks_depth
+
+    src = CameraSource(camera_id)
+    history = collections.deque(maxlen=15)
+    with HandDetector(max_num_hands=2,
+                      min_detection_confidence=0.3) as detector:
+        for frame, _, _ in src:
+            hf = detector.detect(frame)
+            row = hands_to_row(hf.hands)
+            if row is not None:
+                f0 = FEATURE.extract(row[:21])
+                f1 = (FEATURE.extract(row[21:])
+                      if not np.isnan(row[21:]).all()
+                      else np.zeros(210, dtype=np.float32))
+                history.append(np.concatenate([f0, f1]))
+            canvas = draw_landmarks_depth(frame, hf)
+            if history:
+                q = np.mean(np.stack(history), axis=0)
+                for rank, (word, dist) in enumerate(
+                        match(q, words, mat, topk), 1):
+                    cv2.putText(canvas, f"{rank}. {word} ({dist:.2f})",
+                                (10, 30 + rank * 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.imshow("SignBridge 词识别（q/Esc 退出）", canvas)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+    src.close()
+    cv2.destroyAllWindows()
 
 
 def match(query_feat: np.ndarray, words, mat, topk: int):
@@ -82,6 +128,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="词识别演示")
     parser.add_argument("--npz", type=str, default="data/dataset/spreadthesign.npz")
     parser.add_argument("--query", type=str, default=None)
+    parser.add_argument("--camera", type=int, default=None,
+                        help="摄像头实时词识别（指定 camera-id）")
     parser.add_argument("--topk", type=int, default=5)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
@@ -92,6 +140,10 @@ def main() -> int:
         return 1
     words, mat = build_templates(npz)
     print(f"模板库: {len(words)} 词")
+
+    if args.camera is not None:
+        run_camera(words, mat, args.camera, args.topk)
+        return 0
 
     if args.self_test:
         d = np.load(npz, allow_pickle=True)
