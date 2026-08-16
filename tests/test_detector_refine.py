@@ -95,10 +95,12 @@ def test_refine_uses_confirmed_stage_coords(monkeypatch, tmp_path):
     assert hand.score > 0.9       # 采用确认阶段的高置信度
 
 
-def test_refine_drops_noise_when_confirm_fails(monkeypatch, tmp_path):
+def test_refine_falls_back_to_candidate_when_confirm_fails(monkeypatch, tmp_path):
     det = _make_detector(monkeypatch, tmp_path,
                          _two_stage_factory(confirm_ok=False))
-    assert det.detect(_frame()).hands == ()   # 候选存在但确认失败 → 丢弃
+    hf = det.detect(_frame())
+    assert len(hf.hands) == 1                     # 确认失败 → 回退候选
+    assert hf.hands[0].score == pytest.approx(0.25)   # 候选的置信度
 
 
 def test_refine_no_candidate_stays_empty(monkeypatch, tmp_path):

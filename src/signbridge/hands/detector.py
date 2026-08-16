@@ -105,16 +105,14 @@ class HandDetector:
         if self.refine_roi:
             fh, fw = frame.shape[:2]
             cand = self._candidate_landmarker.detect(image)
-            hands = []
-            for h, w, c in zip(
-                cand.hand_landmarks,
-                cand.hand_world_landmarks,
-                cand.handedness,
-            ):
-                refined = self._refine_hand(frame, fw, fh, h, w, c)
-                if refined is not None:      # 确认失败 → 丢弃噪声候选
-                    hands.append(refined)
-            hands = tuple(hands)
+            hands = tuple(
+                self._refine_hand(frame, fw, fh, h, w, c)
+                for h, w, c in zip(
+                    cand.hand_landmarks,
+                    cand.hand_world_landmarks,
+                    cand.handedness,
+                )
+            )
         else:
             result = self._landmarker.detect(image)
             hands = tuple(
@@ -134,13 +132,14 @@ class HandDetector:
         return hand_frame
 
     def _refine_hand(self, frame, fw, fh, landmarks, world_landmarks, handedness):
-        """候选手 ROI 放大后用正常阈值确认；失败返回 None（丢弃）。"""
+        """候选手 ROI 放大后用正常阈值确认；确认失败回退候选结果。"""
+        fallback = _to_hand(landmarks, world_landmarks, handedness)
         xs = [lm.x for lm in landmarks]
         ys = [lm.y for lm in landmarks]
         bw = (max(xs) - min(xs)) * fw
         bh = (max(ys) - min(ys)) * fh
         if bw < 8 or bh < 8:
-            return None
+            return fallback
         mx = bw * self._roi_margin
         my = bh * self._roi_margin
         x0 = max(int(min(xs) * fw - mx), 0)
@@ -148,7 +147,7 @@ class HandDetector:
         y0 = max(int(min(ys) * fh - my), 0)
         y1 = min(int(max(ys) * fh + my), fh)
         if x1 - x0 < 8 or y1 - y0 < 8:
-            return None
+            return fallback
         roi = frame[y0:y1, x0:x1]
         scale = self._roi_target_size / max(x1 - x0, y1 - y0)
         rw = max(int((x1 - x0) * scale), 8)
@@ -158,7 +157,7 @@ class HandDetector:
         img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         res = self._landmarker.detect(img)     # 正常阈值确认
         if not res.hand_landmarks:
-            return None
+            return fallback
         lms2 = res.hand_landmarks[0]
         wl = (
             res.hand_world_landmarks[0]
