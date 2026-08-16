@@ -88,3 +88,25 @@ class STGCNCTC(nn.Module):
         return [ctc_beam_search(lp, blank=0, beam_width=beam_width,
                                 top_tokens=top_tokens)
                 for lp in log_probs]
+
+    def embed(self, x) -> torch.Tensor:
+        """段 → 嵌入向量 (N, D)。
+
+        blocks 输出 (N, C, T', V) → 节点均值 → 时间均值 → (N, C_last)。
+        嵌入空间由 CTC 监督塑造，可直接用于骨架段相似度检索/词识别。
+        """
+        if x.dim() != 4:
+            raise ValueError(f"输入必须是 4 维 (N,C,T,V)，收到 {x.dim()} 维")
+        if x.shape[1] != self.in_channels:
+            raise ValueError(
+                f"通道数应为 {self.in_channels}，收到 {x.shape[1]}")
+        if x.shape[3] != self.num_nodes:
+            raise ValueError(f"节点数应为 {self.num_nodes}，收到 {x.shape[3]}")
+        if x.shape[2] < self.kernel_size:
+            raise ValueError(
+                f"时间长度 T={x.shape[2]} 必须 >= kernel_size={self.kernel_size}")
+        for block in self.blocks:
+            x = block(x)
+        x = x.mean(dim=3)          # 节点均值 → (N, C, T')
+        x = x.mean(dim=2)          # 时间均值 → (N, C)
+        return x

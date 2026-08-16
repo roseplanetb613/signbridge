@@ -79,3 +79,13 @@ def test_invalid_input_raises():
         model(torch.randn(2, 3, 128, 20))              # V=20 != 21
     with pytest.raises(ValueError):
         model(torch.randn(2, 3, 5, 21))                # T < kernel_size
+
+
+def test_embed_shape_and_t_invariance():
+    model = STGCNCTC(num_classes=5, adjacency=_adj())
+    model.eval()
+    with torch.no_grad():
+        e1 = model.embed(torch.randn(2, 3, 128, 21))
+        e2 = model.embed(torch.randn(2, 3, 64, 21))    # 不同 T（下采样后 T' 不同）
+    assert e1.shape == (2, 256)                        # C_last = 256
+    assert e2.shape == (2, 256)                        # 时间均值 → 与 T 无关
