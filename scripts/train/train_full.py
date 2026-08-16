@@ -11,6 +11,7 @@
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -26,12 +27,21 @@ MAX_T = 256             # 段长上限（截断）
 
 
 def time_augment(data: np.ndarray, target_t: int) -> np.ndarray:
-    """时间增强：长段随机窗口裁剪（等效时间缩放）。"""
+    """时间增强：长段随机窗口裁剪 + 短段随机（重复填充 / 时间插值缩放）。"""
     t = len(data)
     if t > target_t:
         start = np.random.randint(0, t - target_t + 1)
         return data[start:start + target_t]
     if t < target_t:
+        if np.random.rand() < 0.5:
+            # 时间插值缩放（线性，向量化）——比重复填充更平滑
+            x_old = np.linspace(0.0, 1.0, t)
+            x_new = np.linspace(0.0, 1.0, target_t)
+            pos = x_new * (t - 1)
+            i0 = np.floor(pos).astype(int)
+            i1 = np.minimum(i0 + 1, t - 1)
+            frac = (pos - i0)[:, None, None].astype(np.float32)
+            return data[i0] * (1 - frac) + data[i1] * frac
         reps = int(np.ceil(target_t / t))
         return np.tile(data, (reps, 1, 1))[:target_t]
     return data
@@ -191,7 +201,9 @@ def main() -> int:
     parser.add_argument("--beam-width", type=int, default=5,
                         help="评估解码束宽（1=贪心）")
     parser.add_argument("--augment", action="store_true",
-                        help="开启训练在线增强（时间随机窗口 + 空间扰动）")
+                        help="开启训练在线增强（时间随机窗口/插值 + 空间扰动）")
+    parser.add_argument("--min-count", type=int, default=3,
+                        help="词表低频过滤：出现次数 < min_count 的词剔除（0=不过滤）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -203,7 +215,19 @@ def main() -> int:
             print(f"缺少 {p}（请先运行 extract_dataset.py）")
             return 1
 
-    vocab = list(np.load(vocab_path, allow_pickle=True)["words"])
+    vocab_raw = list(np.load(vocab_path, allow_pickle=True)["words"])
+    if args.min_count > 1:
+        # 从 train glosses 统计词频，过滤低频词（先读 glosses）
+        d_train_raw = np.load(train_path, allow_pickle=True)
+        freq = Counter()
+        for g in d_train_raw["glosses"]:
+            for w in gloss_words(str(g)):
+                freq[w] += 1
+        vocab = [w for w in vocab_raw if freq.get(w, 0) >= args.min_count]
+        print(f"词表过滤: {len(vocab_raw)} → {len(vocab)} 词"
+              f"（min_count={args.min_count}）")
+    else:
+        vocab = vocab_raw
     vocab_idx = {w: i + 1 for i, w in enumerate(vocab)}
     print(f"词表 {len(vocab)} 词（0=blank）")
 
