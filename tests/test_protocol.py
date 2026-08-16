@@ -7,8 +7,8 @@ from signbridge.models.protocol import SkeletonClassifier
 def test_protocol_exposes_interface():
     assert hasattr(SkeletonClassifier, "forward")
     assert hasattr(SkeletonClassifier, "predict")
-    assert hasattr(SkeletonClassifier, "num_classes")
-    assert hasattr(SkeletonClassifier, "num_nodes")
+    assert "num_classes" in SkeletonClassifier.__annotations__
+    assert "num_nodes" in SkeletonClassifier.__annotations__
 
 
 def test_implementation_conforms_via_structure():
