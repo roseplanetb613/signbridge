@@ -85,8 +85,9 @@ def load_split(path: Path, vocab_idx: dict | None, min_det: float,
     return x, targets_pad, torch.tensor(target_lengths), glosses
 
 
-def decode_and_wer(model, x, targets, target_lengths, vocab, device):
-    """贪心解码 + WER/句准确率。返回 (wer, acc, loss)。"""
+def decode_and_wer(model, x, targets, target_lengths, vocab, device,
+                   beam_width: int = 1):
+    """贪心/束搜索解码 + WER/句准确率。返回 (wer, acc, loss)。"""
     model.eval()
     with torch.no_grad():
         logits = model(x.to(device))
@@ -95,7 +96,10 @@ def decode_and_wer(model, x, targets, target_lengths, vocab, device):
                           input_lengths=torch.full((len(x),), 32,
                                                    device=device),
                           target_lengths=target_lengths.to(device))
-        decoded = model.decode(logits)
+        if beam_width > 1:
+            decoded = model.beam_decode(logits, beam_width=beam_width)
+        else:
+            decoded = model.decode(logits)
     total_err = total_ref = 0
     correct = 0
     for i, hyp in enumerate(decoded):
@@ -120,6 +124,8 @@ def main() -> int:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", type=str, default="checkpoints")
+    parser.add_argument("--beam-width", type=int, default=5,
+                        help="评估解码束宽（1=贪心）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -182,7 +188,8 @@ def main() -> int:
         train_loss = total_loss / max(n_batch, 1)
 
         wer, acc, dev_loss = decode_and_wer(
-            model, x_dev, y_dev, ylen_dev, vocab, device)
+            model, x_dev, y_dev, ylen_dev, vocab, device,
+            beam_width=args.beam_width)
         scheduler.step(dev_loss)
         if wer < best_wer:
             best_wer = wer

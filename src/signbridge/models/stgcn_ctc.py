@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from signbridge.models.decoding import ctc_beam_search
 from signbridge.models.stgcn import STGCNBlock
 
 
@@ -76,3 +77,14 @@ class STGCNCTC(nn.Module):
                 prev = c
             out.append(seq)
         return out
+
+    def beam_decode(self, logits, beam_width: int = 10,
+                    top_tokens: int = 20) -> list[list[int]]:
+        """束搜索解码：(N, T', K+1) logits → list[list[int]] 词 id 序列。
+
+        合并同一前缀的多条对齐路径，优于贪心（相邻重复/blank 竞争场景）。
+        """
+        log_probs = torch.log_softmax(logits, dim=2).cpu().numpy()
+        return [ctc_beam_search(lp, blank=0, beam_width=beam_width,
+                                top_tokens=top_tokens)
+                for lp in log_probs]
