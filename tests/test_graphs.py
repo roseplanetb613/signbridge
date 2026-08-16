@@ -29,11 +29,14 @@ def test_build_adjacency_invalid_index_raises():
         build_adjacency([(0, 21)], 21)
 
 
-def test_normalize_adjacency_symmetric_row_sum_le_one():
+def test_normalize_adjacency_symmetric_and_diag_inverse_degree():
     adj = build_adjacency([(0, 1), (1, 2)], 3)
-    norm = normalize_adjacency(adj)
-    assert np.allclose(norm, norm.T, atol=1e-6)
-    assert norm.sum(axis=1).max() <= 1.0 + 1e-5
+    norm = normalize_adjacency(adj)   # include_self=True
+    assert np.allclose(norm, norm.T, atol=1e-6)   # 对称归一化保持对称
+    # 自环归一化后对角 = 1/d_i（d_i = 邻居数 + 1）
+    assert np.allclose(norm[0, 0], 1.0 / 2.0, atol=1e-5)
+    assert np.allclose(norm[1, 1], 1.0 / 3.0, atol=1e-5)
+    assert np.allclose(norm[2, 2], 1.0 / 2.0, atol=1e-5)
 
 
 def test_normalize_adjacency_with_self_loop_rows_sum_one():
