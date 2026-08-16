@@ -14,3 +14,6 @@ docs/images/obs_tracking_overlay.mp4
 # 数据集（CE-CSL 视频+标注，数 GB，不入库）
 data/
 
+
+# ѵ�����checkpoint �ȣ�
+checkpoints/
