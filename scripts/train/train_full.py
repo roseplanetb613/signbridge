@@ -204,6 +204,13 @@ def main() -> int:
                         help="开启训练在线增强（时间随机窗口/插值 + 空间扰动）")
     parser.add_argument("--min-count", type=int, default=3,
                         help="词表低频过滤：出现次数 < min_count 的词剔除（0=不过滤）")
+    parser.add_argument("--eval-only", action="store_true",
+                        help="仅评估 checkpoint（--checkpoint），不训练")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/best.pt")
+    parser.add_argument("--eval-splits", nargs="+", default=["dev", "test"],
+                        help="--eval-only 时评估的 split")
+    parser.add_argument("--show-examples", type=int, default=5,
+                        help="--eval-only 时打印解码示例数")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -216,6 +223,49 @@ def main() -> int:
             return 1
 
     vocab_raw = list(np.load(vocab_path, allow_pickle=True)["words"])
+    if args.eval_only:
+        # 评估模式：直接使用 checkpoint 中的词表
+        ckpt = torch.load(args.checkpoint, map_location="cpu")
+        vocab = list(ckpt["vocab"])
+        print(f"加载 checkpoint: {args.checkpoint}（词表 {len(vocab)}，"
+              f"训练时 best WER {ckpt.get('best_wer', '?')}）")
+        vocab_idx = {w: i + 1 for i, w in enumerate(vocab)}
+        device = ("cuda" if torch.cuda.is_available() else "cpu") \
+            if args.device == "auto" else args.device
+        model = STGCNCTC(num_classes=len(vocab),
+                         adjacency=build_hand_graph(num_hands=2)).to(device)
+        model.load_state_dict(ckpt["state_dict"])
+        for split in args.eval_splits:
+            sp = data_dir / f"{split}.npz"
+            if not sp.exists():
+                print(f"缺少 {sp}")
+                continue
+            samples, y, ylen, glosses = load_split(
+                sp, vocab_idx, 0.0, args.target_t)
+            x = to_tensor_batch(
+                [align_length(np.asarray(s, dtype=np.float32), args.target_t)
+                 for s in samples], args.target_t)
+            wer, acc, loss = decode_and_wer(
+                model, x, y, ylen, vocab, device,
+                beam_width=args.beam_width)
+            print(f"[{split}] {len(samples)} 段：loss {loss:.3f} | "
+                  f"WER {wer:.3f} | 句准确率 {acc:.1%}")
+            if args.show_examples:
+                model.eval()
+                with torch.no_grad():
+                    logits = model(x.to(device))
+                    decoded = model.beam_decode(
+                        logits, beam_width=args.beam_width) \
+                        if args.beam_width > 1 else model.decode(logits)
+                for i in range(min(args.show_examples, len(decoded))):
+                    ref = "".join(gloss_words(str(glosses[i])))
+                    hyp = "".join(vocab[c - 1] for c in decoded[i]
+                                  if 0 < c <= len(vocab))
+                    mark = "✓" if ref == hyp else "✗"
+                    print(f"  例{i + 1} {mark} 真值: {ref}")
+                    print(f"       预测: {hyp or '(空)'}")
+        return 0
+
     if args.min_count > 1:
         # 从 train glosses 统计词频，过滤低频词（先读 glosses）
         d_train_raw = np.load(train_path, allow_pickle=True)
