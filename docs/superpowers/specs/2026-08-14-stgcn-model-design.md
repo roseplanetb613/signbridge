@@ -55,7 +55,7 @@ def build_hand_graph(num_hands=1) -> np.ndarray:
 ## 4. 模型协议 `models/protocol.py`
 
 ```python
-class SkeletonClassifier(nn.Module, Protocol):
+class SkeletonClassifier(Protocol):   # runtime_checkable 纯协议
     """骨架时序分类模型协议（整模型级可插拔）。
 
     任何实现此协议的模型（ST-GCN 默认 / 未来 transformer / GCN 变体）
@@ -72,8 +72,8 @@ class SkeletonClassifier(nn.Module, Protocol):
         """(N, C, T, V) → (N,) 类别索引（argmax 包装 forward）。"""
 ```
 
-- 鸭子类型：实现类继承 `nn.Module` 并实现 `forward` / `predict` 即可（Python 协议语义）
-- 输入约定 `(N, C, T, V)`：N 批、C 特征通道（x,y,z=3）、T 时间、V 节点
+- 纯 `Protocol`（Python 中 `nn.Module` 与 `Protocol` 多重继承运行时非法）：
+  实现类继承 `nn.Module` 并实现 `forward` / `predict` 即符合协议（结构性检查）
 
 ## 5. ST-GCN 实现 `models/stgcn.py`
 
