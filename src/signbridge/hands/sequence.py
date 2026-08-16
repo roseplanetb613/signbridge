@@ -12,13 +12,38 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from signbridge.core.features import FeatureExtractor, HandShapeFeature
-from signbridge.core.landmarks import HandFrame
+from signbridge.core.landmarks import Hand, HandFrame
 from signbridge.core.matching import (
     FeatureHungarianMatcher,
     HandDescriptor,
     Matcher,
 )
 from signbridge.core.smoothing import LandmarkSmoother
+
+
+def classify_two_hands(hand_a: Hand, hand_b: Hand) -> tuple[Hand, Hand]:
+    """方案 B 双手分块：返回 (块0 的手, 块1 的手)。
+
+    handedness 不同 → Left 块0 / Right 块1；
+    handedness 冲突（双同侧）→ 按画面 x 位置（左侧 → 块 0）。
+    """
+    ha, hb = hand_a, hand_b
+    if ha.handedness != hb.handedness:
+        if ha.handedness == "Left":
+            return ha, hb
+        return hb, ha
+    xa = ha.landmarks[0].x
+    xb = hb.landmarks[0].x
+    if xa <= xb:
+        return ha, hb
+    return hb, ha
+
+
+def to_normalized(hand: Hand) -> np.ndarray:
+    """腕点归一化 (21,3) 坐标（world 米制）。"""
+    lms = hand.world_landmarks
+    pts = np.array([[lm.x, lm.y, lm.z] for lm in lms], dtype=np.float32)
+    return pts - pts[0]
 
 
 @dataclass(frozen=True)
