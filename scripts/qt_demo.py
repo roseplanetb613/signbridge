@@ -45,12 +45,12 @@ def _seq_last_pts(seq):
 class TrackingWindow(QMainWindow):
     """摄像头实时手部跟踪验证窗口（含特征提取可视化）。"""
 
-    def __init__(self, camera_id: int, window_size: int) -> None:
+    def __init__(self, camera_id: int, window_size: int, refine: bool) -> None:
         super().__init__()
         self.setWindowTitle("SignBridge 手部跟踪验证（特征提取）")
         try:
             self._source = CameraSource(camera_id)
-            self._detector = HandDetector(max_num_hands=2)
+            self._detector = HandDetector(max_num_hands=2, refine_roi=refine)
         except SignBridgeError as exc:
             QMessageBox.critical(self, "初始化失败", str(exc))
             raise
@@ -204,10 +204,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SignBridge Qt 手部跟踪验证")
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--window", type=int, default=60)
+    parser.add_argument("--no-refine", action="store_true",
+                        help="关闭两级候选检测（默认开启，改善远端小手识别）")
     args = parser.parse_args()
     app = QApplication(sys.argv)
     try:
-        win = TrackingWindow(args.camera_id, args.window)
+        win = TrackingWindow(args.camera_id, args.window,
+                             refine=not args.no_refine)
     except SignBridgeError:
         return 1
     win.resize(1280, 720)
