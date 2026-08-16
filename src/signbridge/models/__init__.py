@@ -2,5 +2,6 @@
 
 from signbridge.models.protocol import SkeletonClassifier
 from signbridge.models.stgcn import STGCN
+from signbridge.models.stgcn_ctc import STGCNCTC
 
-__all__ = ["SkeletonClassifier", "STGCN"]
+__all__ = ["SkeletonClassifier", "STGCN", "STGCNCTC"]
