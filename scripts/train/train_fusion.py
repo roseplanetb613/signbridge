@@ -203,7 +203,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="三流融合 CTC 训练")
     parser.add_argument("--data-dir", type=str, default="data/dataset")
     parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4,
+                        help="16GB 内存机器建议 ≤4（ROI 数据占内存大）")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--resnet-lr-factor", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -304,8 +305,17 @@ def main() -> int:
 
     start_epoch = 1
     best_wer = 1.0
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
+    resume_path = args.resume
+    if resume_path is None:
+        # 自动恢复顺序：batch 级 latest > epoch 级 best（兼容旧版进程的产物）
+        out_dir0 = Path(args.out_dir)
+        for cand in ("fusion_latest.pt", "fusion_best.pt"):
+            if (out_dir0 / cand).exists():
+                resume_path = str(out_dir0 / cand)
+                print(f"检测到 {cand}，自动断点恢复", flush=True)
+                break
+    if resume_path:
+        ckpt = torch.load(resume_path, map_location=device)
         model.load_state_dict(ckpt["state_dict"])
         if "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -323,6 +333,17 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = out_dir / "fusion_best.pt"
+    latest_path = out_dir / "fusion_latest.pt"
+
+    def _save_ckpt(path, epoch, best):
+        torch.save({"state_dict": model.state_dict(),
+                    "vocab": vocab,
+                    "config": vars(args),
+                    "best_wer": best,
+                    "epoch": epoch,
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict()},
+                   path)
 
     print(f"{'epoch':>5} {'train_loss':>10} {'dev_loss':>9} "
           f"{'dev_WER':>8} {'dev_acc':>7}")
@@ -353,7 +374,11 @@ def main() -> int:
             total_loss += loss.item()
             n_batch += 1
             pbar.set_postfix(loss=f"{loss.item():.3f}")
+            # batch 级断点：每 100 batch 自动保存 latest（崩溃损失 ≤100 batch）
+            if n_batch % 100 == 0:
+                _save_ckpt(latest_path, epoch, best_wer)
         pbar.close()
+        _save_ckpt(latest_path, epoch, best_wer)   # epoch 结束也保存
         train_loss = total_loss / max(n_batch, 1)
 
         wer, acc, dev_loss = decode_and_wer(
@@ -362,14 +387,7 @@ def main() -> int:
         scheduler.step(dev_loss)
         if wer < best_wer:
             best_wer = wer
-            torch.save({"state_dict": model.state_dict(),
-                        "vocab": vocab,
-                        "config": vars(args),
-                        "best_wer": best_wer,
-                        "epoch": epoch,
-                        "optimizer_state": optimizer.state_dict(),
-                        "scheduler_state": scheduler.state_dict()},
-                       ckpt_path)
+            _save_ckpt(ckpt_path, epoch, best_wer)
             suffix = " *"
         else:
             suffix = ""
