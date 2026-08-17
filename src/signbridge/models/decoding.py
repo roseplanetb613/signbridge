@@ -9,9 +9,12 @@ import numpy as np
 
 
 def ctc_beam_search_topk(log_probs, blank: int = 0, beam_width: int = 10,
-                         top_tokens: int = 20, topk: int = 5):
+                         top_tokens: int = 20, topk: int = 5,
+                         length_bonus: float = 0.0):
     """CTC 前缀束搜索，返回 top-k 候选 [(prob, tokens), ...]。
 
+    length_bonus: 每输出一个非 blank 词额外乘 (1+length_bonus)，
+    鼓励更长的序列（缓解 CTC 欠预测/漏词问题）。0=不启用。
     log_probs: (T, K+1) float64 log 概率（行和为 1）。
     """
     lp = np.asarray(log_probs, dtype=np.float64)
@@ -19,6 +22,7 @@ def ctc_beam_search_topk(log_probs, blank: int = 0, beam_width: int = 10,
     if T == 0:
         return [(1.0, [])]
 
+    len_boost = 1.0 + max(length_bonus, 0.0)
     beams = {(): [1.0, 0.0]}   # prefix -> [p_total, p_blank]
     for t in range(T):
         probs = np.exp(lp[t])
@@ -37,12 +41,12 @@ def ctc_beam_search_topk(log_probs, blank: int = 0, beam_width: int = 10,
                 else:
                     if prefix and prefix[-1] == c:
                         if p_blank > 0.0:
-                            add = p_blank * p
+                            add = p_blank * p * len_boost
                             key = prefix + (c,)
                             entry = new_beams.setdefault(key, [0.0, 0.0])
                             entry[0] += add
                     else:
-                        add = p_total * p
+                        add = p_total * p * len_boost
                         key = prefix + (c,)
                         entry = new_beams.setdefault(key, [0.0, 0.0])
                         entry[0] += add
@@ -56,9 +60,14 @@ def ctc_beam_search_topk(log_probs, blank: int = 0, beam_width: int = 10,
 
 
 def ctc_beam_search(log_probs, blank: int = 0, beam_width: int = 10,
-                    top_tokens: int = 20) -> list[int]:
-    """CTC 前缀束搜索，返回最优路径 token 序列（兼容接口）。"""
+                    top_tokens: int = 20, length_bonus: float = 0.0
+                    ) -> list[int]:
+    """CTC 前缀束搜索，返回最优路径 token 序列（兼容接口）。
+
+    length_bonus 语义同 ctc_beam_search_topk。
+    """
     ranked = ctc_beam_search_topk(log_probs, blank=blank,
                                   beam_width=beam_width,
-                                  top_tokens=top_tokens, topk=1)
+                                  top_tokens=top_tokens, topk=1,
+                                  length_bonus=length_bonus)
     return ranked[0][1] if ranked else []

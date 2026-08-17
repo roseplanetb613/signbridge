@@ -134,7 +134,7 @@ def agg_bucket(bucket_key: str, rows: list[dict]) -> dict:
 
 def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
                   target_t: int, beam_width: int, min_det: float,
-                  train_freq: Counter) -> dict:
+                  train_freq: Counter, length_bonus: float = 0.0) -> dict:
     d = np.load(split_path, allow_pickle=True)
     keep = [i for i in range(len(d["data"]))
             if float(d["detection_rates"][i]) >= min_det]
@@ -149,7 +149,8 @@ def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
     model.eval()
     with torch.no_grad():
         logits = model(x.to(device))
-        decoded = (model.beam_decode(logits, beam_width=beam_width)
+        decoded = (model.beam_decode(logits, beam_width=beam_width,
+                                     length_bonus=length_bonus)
                    if beam_width > 1 else model.decode(logits))
 
     per_sample = []
@@ -235,6 +236,9 @@ def main() -> int:
     parser.add_argument("--splits", nargs="+", default=["dev", "test"])
     parser.add_argument("--target-t", type=int, default=128)
     parser.add_argument("--beam-width", type=int, default=5)
+    parser.add_argument("--length-bonus", type=float, default=0.0,
+                        help="解码长度偏置：每输出一词乘 (1+bonus)，"
+                             "缓解欠预测（0=不启用）")
     parser.add_argument("--min-det", type=float, default=MIN_DETECTION)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--out-dir", type=str, default="reports/wer_buckets")
@@ -276,7 +280,7 @@ def main() -> int:
             continue
         res = analyze_split(model, sp, vocab, vocab_idx, device,
                             args.target_t, args.beam_width, args.min_det,
-                            train_freq)
+                            train_freq, args.length_bonus)
         results[split] = res
         print(f"\n=== [{split}] {res['n_segments']} 段 | "
               f"整体 WER {res['overall_wer']:.3f} | "

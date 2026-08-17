@@ -79,14 +79,17 @@ class STGCNCTC(nn.Module):
         return out
 
     def beam_decode(self, logits, beam_width: int = 10,
-                    top_tokens: int = 20) -> list[list[int]]:
+                    top_tokens: int = 20, length_bonus: float = 0.0
+                    ) -> list[list[int]]:
         """束搜索解码：(N, T', K+1) logits → list[list[int]] 词 id 序列。
 
         合并同一前缀的多条对齐路径，优于贪心（相邻重复/blank 竞争场景）。
+        length_bonus: 每输出一个词乘 (1+length_bonus)，缓解 CTC 欠预测。
         """
         log_probs = torch.log_softmax(logits, dim=2).cpu().numpy()
         return [ctc_beam_search(lp, blank=0, beam_width=beam_width,
-                                top_tokens=top_tokens)
+                                top_tokens=top_tokens,
+                                length_bonus=length_bonus)
                 for lp in log_probs]
 
     def embed(self, x) -> torch.Tensor:

@@ -64,3 +64,30 @@ def test_larger_vocab():
     lp = _log_probs(probs)
     beam = ctc_beam_search(lp, blank=0, beam_width=5)
     assert beam == [1, 2]           # token1, blank, token2 → [1, 2]
+
+
+def test_length_bonus_prefers_longer():
+    """低置信度下默认输出短序列，加 length_bonus 后倾向更长。"""
+    probs = [[0.6, 0.4], [0.6, 0.4], [0.6, 0.4]]
+    lp = _log_probs(probs)          # 每步 blank 占优；T=3 最多 2 词（重复需 blank 分隔）
+    assert ctc_beam_search(lp, blank=0, beam_width=5) == [1]
+    # bonus 足够大 → 输出满长 [1, blank, 1]
+    assert ctc_beam_search(lp, blank=0, beam_width=5,
+                           length_bonus=5.0) == [1, 1]
+
+
+def test_length_bonus_zero_is_noop():
+    probs = [[0.6, 0.4], [0.6, 0.4]]
+    lp = _log_probs(probs)
+    assert ctc_beam_search(lp, blank=0, beam_width=5,
+                           length_bonus=0.0) == [1]
+
+
+def test_length_bonus_monotonic():
+    """bonus 越大输出越长（单调不减）。"""
+    probs = [[0.55, 0.45], [0.55, 0.45], [0.55, 0.45], [0.55, 0.45]]
+    lp = _log_probs(probs)
+    lens = [len(ctc_beam_search(lp, blank=0, beam_width=8,
+                                length_bonus=b))
+            for b in (0.0, 0.3, 0.8, 2.0)]
+    assert lens == sorted(lens)
