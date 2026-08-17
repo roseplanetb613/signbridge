@@ -125,26 +125,29 @@ class FusionDataset(Dataset):
 
 def load_split(base: Path, split: str, vocab_idx: dict, min_det: float,
                verbose: bool = True):
-    print(f"[数据] 加载 {split}.npz（手部骨架）...", flush=True)
+    # np.load 是惰性的：真正耗时在首次访问数组（解压+反序列化）
     t0 = time.monotonic()
     hand = np.load(base / f"{split}.npz", allow_pickle=True)
-    print(f"[数据]   ✓ {split}.npz 完成（{time.monotonic() - t0:.0f}s）",
+    hand_data = hand["data"]
+    rates = hand["detection_rates"]
+    gloss_arr = hand["glosses"]
+    print(f"[数据] {split}.npz 解压完成（{time.monotonic() - t0:.0f}s）",
           flush=True)
     t0 = time.monotonic()
-    pose = np.load(base / f"{split}_pose.npz", allow_pickle=True)
-    print(f"[数据] 加载 {split}_pose.npz（姿态）... "
-          f"✓（{time.monotonic() - t0:.0f}s）", flush=True)
-    t0 = time.monotonic()
-    roi = np.load(base / f"{split}_roi.npz", allow_pickle=True)
-    print(f"[数据] 加载 {split}_roi.npz（ROI 图像，最大文件，"
-          f"解压+反序列化中）... ✓（{time.monotonic() - t0:.0f}s）",
+    pose_img = np.load(base / f"{split}_pose.npz",
+                       allow_pickle=True)["pose_img"]
+    print(f"[数据] {split}_pose.npz 解压完成（{time.monotonic() - t0:.0f}s）",
           flush=True)
-    keep = [i for i in range(len(hand["data"]))
-            if hand["detection_rates"][i] >= min_det]
-    hands = [hand["data"][i] for i in keep]
-    poses = [pose["pose_img"][i] for i in keep]
-    rois = [roi["roi"][i] for i in keep]
-    glosses = [str(hand["glosses"][i]) for i in keep]
+    t0 = time.monotonic()
+    roi_arr = np.load(base / f"{split}_roi.npz", allow_pickle=True)["roi"]
+    print(f"[数据] {split}_roi.npz 解压完成（{time.monotonic() - t0:.0f}s，"
+          f"最大文件）", flush=True)
+    keep = [i for i in range(len(hand_data))
+            if rates[i] >= min_det]
+    hands = [hand_data[i] for i in keep]
+    poses = [pose_img[i] for i in keep]
+    rois = [roi_arr[i] for i in keep]
+    glosses = [str(gloss_arr[i]) for i in keep]
     targets, target_lengths = [], []
     for g in glosses:
         ids = [vocab_idx[w] for w in gloss_words(g) if w in vocab_idx]
