@@ -17,3 +17,7 @@ data/
 
 # ÑµÁ·²úÎï£¨checkpoint µÈ£©
 checkpoints/
+
+# scan logits cache (large, not committed)
+reports/scan_fusion/*.npy
+reports/scan_fusion/*_meta.json
