@@ -85,12 +85,8 @@ def process_video(video_path: str, split: str, meta: dict):
                 if frame_index % FRAME_STRIDE != 0:
                     continue
                 total += 1
-                # 姿态检测用降采样帧（640 宽；pose 对分辨率不敏感，大幅提速）
-                scale = 640 / frame.shape[1]
-                pose_frame = cv2.resize(
-                    frame, (640, int(frame.shape[0] * scale)),
-                    interpolation=cv2.INTER_AREA)
-                rgb = cv2.cvtColor(pose_frame, cv2.COLOR_BGR2RGB)
+                # 姿态检测用全分辨率原帧（质量优先）
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 hf = detector.detect(frame)
                 pr = pose_landmarker.detect(mp_img)
@@ -225,6 +221,9 @@ def main() -> int:
         chunks = [pending[i:i + chunk_size]
                   for i in range(0, len(pending), chunk_size)]
         done_in_chunk = 0
+        from tqdm import tqdm
+        pbar = tqdm(total=len(pending), desc=f"[{split}]",
+                    unit="video", ncols=100, dynamic_ncols=False)
         for chunk_idx, chunk in enumerate(chunks, 1):
             with ProcessPoolExecutor(max_workers=args.workers) as pool:
                 futures = {pool.submit(_work, (v, split, all_meta[split])): v
@@ -233,8 +232,8 @@ def main() -> int:
                     try:
                         result = fut.result()
                     except Exception as exc:          # noqa: BLE001
-                        print(f"失败 {Path(futures[fut]).stem}: {exc}",
-                              flush=True)
+                        pbar.write(f"失败 {Path(futures[fut]).stem}: {exc}")
+                        pbar.update(1)
                         continue
                     np.savez_compressed(
                         parts_dir / f"{split}-{result['video']}.npz",
@@ -246,13 +245,13 @@ def main() -> int:
                         span=np.array([s["span"] for s in result["segments"]]),
                     )
                     done_in_chunk += 1
+                    pbar.update(1)
                     if done_in_chunk % 50 == 0 or done_in_chunk == len(pending):
-                        print(f"[{split}] 进度 {done_in_chunk}/{len(pending)}",
-                              flush=True)
                         _log_progress(split, done_in_chunk, len(pending),
                                       start_time, log_path)
-            print(f"[{split}] 块 {chunk_idx}/{len(chunks)} 完成"
-                  f"（进程池已重建，内存已释放）", flush=True)
+            pbar.write(f"[{split}] 块 {chunk_idx}/{len(chunks)} 完成"
+                       f"（进程池已重建，内存已释放）")
+        pbar.close()
 
     # 合并 parts → split NPZ（hand + pose + roi 三文件，同一顺序对齐）
     vocab = Counter()
