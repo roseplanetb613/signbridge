@@ -10,6 +10,7 @@
 
 import argparse
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -122,10 +123,22 @@ class FusionDataset(Dataset):
         return ht, pt, rt, self.targets[i], self.target_lengths[i]
 
 
-def load_split(base: Path, split: str, vocab_idx: dict, min_det: float):
+def load_split(base: Path, split: str, vocab_idx: dict, min_det: float,
+               verbose: bool = True):
+    print(f"[数据] 加载 {split}.npz（手部骨架）...", flush=True)
+    t0 = time.monotonic()
     hand = np.load(base / f"{split}.npz", allow_pickle=True)
+    print(f"[数据]   ✓ {split}.npz 完成（{time.monotonic() - t0:.0f}s）",
+          flush=True)
+    t0 = time.monotonic()
     pose = np.load(base / f"{split}_pose.npz", allow_pickle=True)
+    print(f"[数据] 加载 {split}_pose.npz（姿态）... "
+          f"✓（{time.monotonic() - t0:.0f}s）", flush=True)
+    t0 = time.monotonic()
     roi = np.load(base / f"{split}_roi.npz", allow_pickle=True)
+    print(f"[数据] 加载 {split}_roi.npz（ROI 图像，最大文件，"
+          f"解压+反序列化中）... ✓（{time.monotonic() - t0:.0f}s）",
+          flush=True)
     keep = [i for i in range(len(hand["data"]))
             if hand["detection_rates"][i] >= min_det]
     hands = [hand["data"][i] for i in keep]
@@ -240,11 +253,15 @@ def main() -> int:
     # 词表（与 train_full 相同的 min_count 过滤）
     vocab_raw = list(np.load(base / "vocab.npz", allow_pickle=True)["words"])
     if args.min_count > 1:
+        print("[数据] 加载 train.npz 统计词频...", flush=True)
+        t0 = time.monotonic()
         d_raw = np.load(base / "train.npz", allow_pickle=True)
         freq = Counter()
         for g in d_raw["glosses"]:
             for w in gloss_words(str(g)):
                 freq[w] += 1
+        print(f"[数据]   词频统计完成（{time.monotonic() - t0:.0f}s）",
+              flush=True)
         vocab = [w for w in vocab_raw if freq.get(w, 0) >= args.min_count]
         print(f"词表过滤: {len(vocab_raw)} → {len(vocab)}")
     else:
