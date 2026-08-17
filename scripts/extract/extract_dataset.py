@@ -12,11 +12,14 @@ import argparse
 import csv
 import glob
 import json
+import os
 import sys
 import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+
+os.environ.setdefault("GLOG_minloglevel", "2")   # 抑制 mediapipe glog INFO/WARNING 刷屏
 
 import numpy as np
 
