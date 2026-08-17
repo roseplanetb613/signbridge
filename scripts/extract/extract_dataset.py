@@ -19,7 +19,8 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-os.environ.setdefault("GLOG_minloglevel", "2")   # 抑制 mediapipe glog INFO/WARNING 刷屏
+os.environ.setdefault("GLOG_minloglevel", "2")    # 抑制 mediapipe glog INFO/WARNING 刷屏
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")  # 抑制 absl 日志（feedback tensors 警告）
 
 import numpy as np
 
