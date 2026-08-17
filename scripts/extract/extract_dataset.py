@@ -85,7 +85,12 @@ def process_video(video_path: str, split: str, meta: dict):
                 if frame_index % FRAME_STRIDE != 0:
                     continue
                 total += 1
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # 姿态检测用降采样帧（640 宽；pose 对分辨率不敏感，大幅提速）
+                scale = 640 / frame.shape[1]
+                pose_frame = cv2.resize(
+                    frame, (640, int(frame.shape[0] * scale)),
+                    interpolation=cv2.INTER_AREA)
+                rgb = cv2.cvtColor(pose_frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 hf = detector.detect(frame)
                 pr = pose_landmarker.detect(mp_img)
