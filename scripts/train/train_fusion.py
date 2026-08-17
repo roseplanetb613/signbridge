@@ -315,7 +315,10 @@ def main() -> int:
         model.train()
         total_loss = 0.0
         n_batch = 0
-        for ht, pt, rt, yb, ylb in loader:
+        from tqdm import tqdm
+        pbar = tqdm(loader, desc=f"epoch {epoch}/{args.epochs}",
+                    unit="batch", ncols=110, leave=False)
+        for ht, pt, rt, yb, ylb in pbar:
             ht, pt, rt = ht.to(device), pt.to(device), rt.to(device)
             yb, ylb = yb.to(device), ylb.to(device)
             optimizer.zero_grad()
@@ -329,6 +332,8 @@ def main() -> int:
             optimizer.step()
             total_loss += loss.item()
             n_batch += 1
+            pbar.set_postfix(loss=f"{loss.item():.3f}")
+        pbar.close()
         train_loss = total_loss / max(n_batch, 1)
 
         wer, acc, dev_loss = decode_and_wer(
