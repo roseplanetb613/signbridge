@@ -1,7 +1,13 @@
 """WER 分桶分析：按句子长度 / 手语者 / 词频 细粒度定位错误。
 
+支持模型：
+  - skeleton：STGCNCTC 骨架模型（hand 单流，data/dataset/{split}.npz）
+  - fusion：FusionSTGCNCTC 三流融合（hand + pose + ROI，
+    data/dataset/{split}.npz + {split}_pose.npz + {split}_roi.npz）
+
 用法:
   python scripts/analyze/wer_buckets.py [--checkpoint checkpoints/best.pt]
+                                        [--model-type auto]
                                         [--splits dev test]
                                         [--beam-width 5] [--min-det 0.3]
                                         [--out-dir reports/wer_buckets]
@@ -24,11 +30,24 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from signbridge import STGCNCTC, build_hand_graph
+from signbridge import STGCNCTC, FusionSTGCNCTC, build_hand_graph
+from signbridge.core.graphs import build_adjacency
 
 PUNCT = set("。，？！、；：""''（）《》")
 MIN_DETECTION = 0.3
 MAX_T = 256
+# 与 scripts/train/train_fusion.py 保持一致（MediaPipe Pose 33 点连接表；
+# 若修改训练侧连接表，请同步此处）
+POSE_CONNECTIONS = (
+    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
+    (9, 10), (11, 12), (11, 13), (13, 15), (15, 17), (15, 19), (15, 21),
+    (17, 19), (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20),
+    (11, 23), (12, 24), (23, 24), (23, 25), (24, 26), (25, 27), (26, 28),
+    (27, 29), (28, 30), (29, 31), (30, 32), (27, 31), (28, 32),
+)
+ROI_SIZE = 128          # ROI 提取尺寸（与 train_fusion.py 一致）
+ROI_CROP = 112          # 融合模型输入（中心裁剪，与 train_fusion.py 一致）
+FUSION_BATCH = 8        # fusion 分批前向（ROI 解码占内存，避免全量载入）
 
 
 def gloss_words(gloss: str) -> list[str]:
@@ -81,11 +100,46 @@ def word_freq_bucket(freq: Counter, word: str) -> str:
 
 
 def align_length(data: np.ndarray, target_t: int) -> np.ndarray:
+    """T 对齐：截断或重复填充（任意维度，第 0 维为时间）。"""
     t = len(data)
     if t >= target_t:
         return data[:target_t]
-    reps = int(np.ceil(target_t / t))
-    return np.tile(data, (reps, 1, 1))[:target_t]
+    reps = (int(np.ceil(target_t / t)),) + (1,) * (data.ndim - 1)
+    return np.tile(data, reps)[:target_t]
+
+
+def _fusion_batch(hand_samples, pose_samples, roi_samples, target_t: int):
+    """融合模型三流 batch 构造（与 train_fusion.FusionDataset 的
+    eval 路径一致：nan→0、T 对齐、JPEG 解码、中心裁剪 112）。
+
+    Returns: (hand (N,3,T,42), pose (N,3,T,33), roi (N,T,3,112,112)) tensors。
+    """
+    import cv2  # 延迟导入：仅 fusion 模式需要
+    hands, poses, rois = [], [], []
+    for h, p, frames in zip(hand_samples, pose_samples, roi_samples):
+        h = np.asarray(h, dtype=np.float32)
+        p = np.nan_to_num(np.asarray(p, dtype=np.float32), nan=0.0)
+        h = align_length(h, target_t)
+        p = align_length(p, target_t)
+        roi_frames = []
+        for b in frames:
+            if b is None:
+                roi_frames.append(
+                    np.zeros((ROI_SIZE, ROI_SIZE, 3), dtype=np.uint8))
+            else:
+                roi_frames.append(cv2.imdecode(np.frombuffer(b, np.uint8),
+                                               cv2.IMREAD_COLOR))
+        roi = np.stack(roi_frames) if roi_frames else np.zeros(
+            (target_t, ROI_SIZE, ROI_SIZE, 3), dtype=np.uint8)
+        roi = align_length(roi, target_t)
+        off = (ROI_SIZE - ROI_CROP) // 2
+        roi = roi[:, off:off + ROI_CROP, off:off + ROI_CROP, :]
+        hands.append(h.transpose(2, 0, 1))
+        poses.append(p.transpose(2, 0, 1))
+        rois.append(np.ascontiguousarray(roi).transpose(0, 3, 1, 2))
+    return (torch.from_numpy(np.stack(hands)).float(),
+            torch.from_numpy(np.stack(poses)).float(),
+            torch.from_numpy(np.stack(rois)).float())
 
 
 def to_tensor_batch(samples, target_t: int):
@@ -132,42 +186,10 @@ def agg_bucket(bucket_key: str, rows: list[dict]) -> dict:
     }
 
 
-def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
-                  target_t: int, beam_width: int, min_det: float,
-                  train_freq: Counter, length_bonus: float = 0.0) -> dict:
-    d = np.load(split_path, allow_pickle=True)
-    keep = [i for i in range(len(d["data"]))
-            if float(d["detection_rates"][i]) >= min_det]
-    samples = [d["data"][i] for i in keep]
-    glosses = [str(d["glosses"][i]) for i in keep]
-    translators = [str(d["translators"][i]) for i in keep]
-    videos = [str(d["videos"][i]) for i in keep]
-
-    x = to_tensor_batch(
-        [align_length(np.asarray(s, dtype=np.float32), target_t)
-         for s in samples], target_t)
-    model.eval()
-    with torch.no_grad():
-        logits = model(x.to(device))
-        decoded = (model.beam_decode(logits, beam_width=beam_width,
-                                     length_bonus=length_bonus)
-                   if beam_width > 1 else model.decode(logits))
-
-    per_sample = []
-    for i, hyp_ids in enumerate(decoded):
-        ref = gloss_words(glosses[i])
-        hyp = [vocab[c - 1] for c in hyp_ids if 0 < c <= len(vocab)]
-        ops = align_words(ref, hyp)
-        err = sum(1 for op, _ in ops if op != "match")
-        per_sample.append({
-            "video": videos[i],
-            "translator": translators[i],
-            "ref": ref,
-            "hyp": hyp,
-            "ops": ops,
-            "errors": err,
-            "n_ref": len(ref),
-        })
+def build_bucket_results(split: str, per_sample: list[dict],
+                         train_freq: Counter) -> dict:
+    """由逐样本结果聚合三种分桶（句长 / signer / 词频），skeleton 与
+    fusion 模式共用。"""
 
     def agg(bucket_key: str, rows: list[dict]) -> dict:
         return agg_bucket(bucket_key, rows)
@@ -205,7 +227,7 @@ def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
                          key=lambda kv: -kv[1]["n"])]
 
     return {
-        "split": split_path.stem,
+        "split": split,
         "n_segments": len(per_sample),
         "overall_wer": round(
             sum(r["errors"] for r in per_sample)
@@ -220,6 +242,93 @@ def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
     }
 
 
+def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
+                  target_t: int, beam_width: int, min_det: float,
+                  train_freq: Counter, length_bonus: float = 0.0) -> dict:
+    """skeleton 模式：hand 单流整批前向。"""
+    d = np.load(split_path, allow_pickle=True)
+    keep = [i for i in range(len(d["data"]))
+            if float(d["detection_rates"][i]) >= min_det]
+    samples = [d["data"][i] for i in keep]
+    glosses = [str(d["glosses"][i]) for i in keep]
+    translators = [str(d["translators"][i]) for i in keep]
+    videos = [str(d["videos"][i]) for i in keep]
+
+    x = to_tensor_batch(
+        [align_length(np.asarray(s, dtype=np.float32), target_t)
+         for s in samples], target_t)
+    model.eval()
+    with torch.no_grad():
+        logits = model(x.to(device))
+        decoded = (model.beam_decode(logits, beam_width=beam_width,
+                                     length_bonus=length_bonus)
+                   if beam_width > 1 else model.decode(logits))
+
+    per_sample = []
+    for i, hyp_ids in enumerate(decoded):
+        ref = gloss_words(glosses[i])
+        hyp = [vocab[c - 1] for c in hyp_ids if 0 < c <= len(vocab)]
+        ops = align_words(ref, hyp)
+        err = sum(1 for op, _ in ops if op != "match")
+        per_sample.append({
+            "video": videos[i],
+            "translator": translators[i],
+            "ref": ref,
+            "hyp": hyp,
+            "ops": ops,
+            "errors": err,
+            "n_ref": len(ref),
+        })
+    return build_bucket_results(split_path.stem, per_sample, train_freq)
+
+
+def analyze_split_fusion(model, base: Path, split: str, vocab, device,
+                         target_t: int, beam_width: int, min_det: float,
+                         train_freq: Counter, length_bonus: float = 0.0,
+                         batch_size: int = FUSION_BATCH) -> dict:
+    """fusion 模式：三流数据分批前向（ROI 即时解码，内存友好）。"""
+    d = np.load(base / f"{split}.npz", allow_pickle=True)
+    pose_img = np.load(base / f"{split}_pose.npz",
+                       allow_pickle=True)["pose_img"]
+    roi_arr = np.load(base / f"{split}_roi.npz", allow_pickle=True)["roi"]
+    rates = d["detection_rates"]
+    keep = [i for i in range(len(d["data"]))
+            if float(rates[i]) >= min_det]
+    glosses = d["glosses"]
+    translators = d["translators"]
+    videos = d["videos"]
+
+    per_sample = []
+    model.eval()
+    with torch.no_grad():
+        for s in range(0, len(keep), batch_size):
+            idx = keep[s:s + batch_size]
+            ht, pt, rt = _fusion_batch(
+                [d["data"][i] for i in idx],
+                [pose_img[i] for i in idx],
+                [roi_arr[i] for i in idx], target_t)
+            logits = model(ht.to(device), pt.to(device), rt.to(device))
+            decoded = (model.beam_decode(logits, beam_width=beam_width,
+                                         length_bonus=length_bonus)
+                       if beam_width > 1 else model.decode(logits))
+            for j, hyp_ids in enumerate(decoded):
+                i = idx[j]
+                ref = gloss_words(str(glosses[i]))
+                hyp = [vocab[c - 1] for c in hyp_ids if 0 < c <= len(vocab)]
+                ops = align_words(ref, hyp)
+                err = sum(1 for op, _ in ops if op != "match")
+                per_sample.append({
+                    "video": str(videos[i]),
+                    "translator": str(translators[i]),
+                    "ref": ref,
+                    "hyp": hyp,
+                    "ops": ops,
+                    "errors": err,
+                    "n_ref": len(ref),
+                })
+    return build_bucket_results(split, per_sample, train_freq)
+
+
 def print_table(title: str, rows: list[dict], cols: list[str]) -> None:
     print(f"\n## {title}")
     header = " | ".join(cols)
@@ -232,6 +341,12 @@ def print_table(title: str, rows: list[dict], cols: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="WER 分桶分析")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/best.pt")
+    parser.add_argument("--model-type", type=str, default="auto",
+                        choices=["auto", "skeleton", "fusion"],
+                        help="模型类型：auto 按 checkpoint 自动检测"
+                             "（state_dict 含 resnet 参数 → fusion）；"
+                             "fusion 需 data/dataset/{split}_pose.npz 与"
+                             " {split}_roi.npz（ROI 为 JPEG 字节）")
     parser.add_argument("--data-dir", type=str, default="data/dataset")
     parser.add_argument("--splits", nargs="+", default=["dev", "test"])
     parser.add_argument("--target-t", type=int, default=128)
@@ -253,6 +368,12 @@ def main() -> int:
     print(f"checkpoint: {args.checkpoint}（词表 {len(vocab)}，"
           f"训练 best WER {ckpt.get('best_wer', '?')}）")
 
+    if args.model_type == "auto":
+        args.model_type = ("fusion" if any(
+            k.startswith("resnet.") for k in ckpt["state_dict"])
+            else "skeleton")
+        print(f"model-type: auto → {args.model_type}")
+
     # 训练集词频（词频桶用）
     train_path = data_dir / "train.npz"
     train_freq = Counter()
@@ -265,10 +386,17 @@ def main() -> int:
 
     device = ("cuda" if torch.cuda.is_available() else "cpu") \
         if args.device == "auto" else args.device
-    model = STGCNCTC(num_classes=len(vocab),
-                     adjacency=build_hand_graph(num_hands=2)).to(device)
+    if args.model_type == "fusion":
+        model = FusionSTGCNCTC(
+            num_classes=len(vocab),
+            hand_adjacency=build_hand_graph(num_hands=2),
+            pose_adjacency=build_adjacency(POSE_CONNECTIONS, 33),
+            resnet_pretrained=False).to(device)
+    else:
+        model = STGCNCTC(num_classes=len(vocab),
+                         adjacency=build_hand_graph(num_hands=2)).to(device)
     model.load_state_dict(ckpt["state_dict"])
-    print(f"device: {device}")
+    print(f"model: {args.model_type} | device: {device}")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -278,9 +406,20 @@ def main() -> int:
         if not sp.exists():
             print(f"缺少 {sp}")
             continue
-        res = analyze_split(model, sp, vocab, vocab_idx, device,
-                            args.target_t, args.beam_width, args.min_det,
-                            train_freq, args.length_bonus)
+        if args.model_type == "fusion":
+            missing = [f"{split}{s}" for s in ("_pose.npz", "_roi.npz")
+                       if not (data_dir / f"{split}{s}").exists()]
+            if missing:
+                print(f"缺少 fusion 数据: {[str(data_dir / m) for m in missing]}")
+                continue
+            res = analyze_split_fusion(model, data_dir, split, vocab, device,
+                                       args.target_t, args.beam_width,
+                                       args.min_det, train_freq,
+                                       args.length_bonus)
+        else:
+            res = analyze_split(model, sp, vocab, vocab_idx, device,
+                                args.target_t, args.beam_width, args.min_det,
+                                train_freq, args.length_bonus)
         results[split] = res
         print(f"\n=== [{split}] {res['n_segments']} 段 | "
               f"整体 WER {res['overall_wer']:.3f} | "

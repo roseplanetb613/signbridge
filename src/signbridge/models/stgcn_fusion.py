@@ -170,9 +170,15 @@ class FusionSTGCNCTC(nn.Module):
             out.append(seq)
         return out
 
-    def beam_decode(self, logits, beam_width=10, top_tokens=20):
-        """束搜索解码：(N, T', K+1) logits → list[list[int]]。"""
+    def beam_decode(self, logits, beam_width=10, top_tokens=20,
+                    length_bonus: float = 0.0):
+        """束搜索解码：(N, T', K+1) logits → list[list[int]]。
+
+        length_bonus: 每输出一个词乘 (1+length_bonus)，缓解 CTC
+        欠预测（与 STGCNCTC.beam_decode 一致）。0=不启用。
+        """
         lp = torch.log_softmax(logits, dim=2).cpu().numpy()
         return [ctc_beam_search(x, blank=0, beam_width=beam_width,
-                                top_tokens=top_tokens)
+                                top_tokens=top_tokens,
+                                length_bonus=length_bonus)
                 for x in lp]

@@ -69,6 +69,15 @@ def test_decode_and_beam():
     assert len(model.beam_decode(logits)) == 2
 
 
+def test_beam_decode_length_bonus():
+    """length_bonus 透传：不报错、输出 token 合法（行为测试见 test_decoding）。"""
+    model = _model()
+    logits = torch.randn(2, 32, 6)
+    out = model.beam_decode(logits, beam_width=5, length_bonus=1.0)
+    assert len(out) == 2
+    assert all(0 <= c <= 5 for seq in out for c in seq)
+
+
 def test_roi_size_mismatch_raises():
     model = _model()
     hand, pose, roi = _inputs(roi_size=128)   # 与 roi_input_size=112 不一致
