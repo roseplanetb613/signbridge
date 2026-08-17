@@ -24,6 +24,11 @@ from signbridge import FusionSTGCNCTC, build_hand_graph
 from signbridge.core.graphs import build_adjacency
 from signbridge.core.segmentation import extract_segments  # noqa: F401（保持依赖）
 
+try:
+    from lm_score import NGramLM
+except ImportError:                                     # 独立运行（eval 场景）
+    from scripts.train.lm_score import NGramLM          # noqa: E402
+
 PUNCT = set("。，？！、；：""''（）《》")
 POSE_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
@@ -162,8 +167,8 @@ def load_split(base: Path, split: str, vocab_idx: dict, min_det: float,
 
 
 def decode_and_wer(model, hands, poses, rois, targets, target_lengths,
-                   vocab, device, beam_width):
-    """三流评估：CTC loss + WER + 句准确率。"""
+                   vocab, device, beam_width, lm=None, lm_alpha=0.8):
+    """三流评估：CTC loss + WER + 句准确率（可选 LM 重打分）。"""
     model.eval()
     ds = FusionDataset(hands, poses, rois, targets, target_lengths,
                        augment=False)
@@ -184,8 +189,20 @@ def decode_and_wer(model, hands, poses, rois, targets, target_lengths,
                               target_lengths=ylb)
             total_loss += loss.item()
             n_batch += 1
-            decoded = (model.beam_decode(logits, beam_width=beam_width)
-                       if beam_width > 1 else model.decode(logits))
+            if lm is not None and beam_width > 1:
+                # top-k 束候选 + LM 重打分
+                from signbridge.models.decoding import ctc_beam_search_topk
+
+                lp_np = lp.cpu().numpy()          # (T', N, K+1)
+                decoded = []
+                for row in lp_np.T:               # 每样本 (T', K+1)
+                    cands = ctc_beam_search_topk(row, blank=0,
+                                                 beam_width=beam_width,
+                                                 topk=5)
+                    decoded.append(lm.rescore(cands, alpha=lm_alpha))
+            else:
+                decoded = (model.beam_decode(logits, beam_width=beam_width)
+                           if beam_width > 1 else model.decode(logits))
             decoded_all.extend(decoded)
     for i, hyp in enumerate(decoded_all):
         ref = [vocab[c - 1]
@@ -219,6 +236,10 @@ def main() -> int:
     parser.add_argument("--eval-only", action="store_true")
     parser.add_argument("--checkpoint", type=str,
                         default="checkpoints/fusion_best.pt")
+    parser.add_argument("--lm", type=str, default=None,
+                        help="词级 n-gram LM 路径（train_lm.py 产出），启用重打分")
+    parser.add_argument("--lm-alpha", type=float, default=0.8,
+                        help="LM 重打分权重")
     args = parser.parse_args()
 
     base = Path(args.data_dir)
@@ -241,6 +262,7 @@ def main() -> int:
             if args.device == "auto" else args.device
         model = model.to(device)
         vocab_idx = {w: i + 1 for i, w in enumerate(vocab)}
+        lm = NGramLM(args.lm) if args.lm else None
         for split in ("dev", "test"):
             sp = base / f"{split}.npz"
             if not sp.exists():
@@ -249,9 +271,10 @@ def main() -> int:
             hands, poses, rois, y, ylen, glosses = data
             wer, acc, loss = decode_and_wer(
                 model, hands, poses, rois, y, ylen, vocab, device,
-                args.beam_width)
+                args.beam_width, lm=lm, lm_alpha=args.lm_alpha)
             print(f"[{split}] {len(hands)} 段：loss {loss:.3f} | "
-                  f"WER {wer:.3f} | 句准确率 {acc:.1%}")
+                  f"WER {wer:.3f} | 句准确率 {acc:.1%}"
+                  f"{'（LM 重打分）' if lm else ''}")
         return 0
 
     # 词表（与 train_full 相同的 min_count 过滤）
@@ -383,7 +406,9 @@ def main() -> int:
 
         wer, acc, dev_loss = decode_and_wer(
             model, hands_de, poses_de, rois_de, y_de, ylen_de, vocab, device,
-            args.beam_width)
+            args.beam_width,
+            lm=NGramLM(args.lm) if args.lm else None,
+            lm_alpha=args.lm_alpha)
         scheduler.step(dev_loss)
         if wer < best_wer:
             best_wer = wer
