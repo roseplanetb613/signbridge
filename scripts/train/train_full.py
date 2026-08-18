@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from signbridge import STGCNCTC, build_hand_graph
 
@@ -350,7 +351,9 @@ def main() -> int:
         model.train()
         total_loss = 0.0
         n_batch = 0
-        for xb, yb, ylb in loader:
+        pbar = tqdm(loader, desc=f"epoch {epoch}/{args.epochs}",
+                    unit="batch", ncols=110, leave=False)
+        for xb, yb, ylb in pbar:
             xb = xb.to(device)
             yb = yb.to(device)
             ylb = ylb.to(device)
@@ -365,6 +368,8 @@ def main() -> int:
             optimizer.step()
             total_loss += loss.item()
             n_batch += 1
+            pbar.set_postfix(loss=f"{loss.item():.3f}")
+        pbar.close()
         train_loss = total_loss / max(n_batch, 1)
 
         wer, acc, dev_loss = decode_and_wer(
