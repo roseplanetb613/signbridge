@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from signbridge import STGCNCTC, FusionSTGCNCTC, build_hand_graph
+from signbridge import STGCNCTC, STGCNCTCEmb, FusionSTGCNCTC, build_hand_graph
 from signbridge.core.graphs import build_adjacency
 
 PUNCT = set("。，？！、；：""''（）《》")
@@ -354,11 +354,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="WER 分桶分析")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/best.pt")
     parser.add_argument("--model-type", type=str, default="auto",
-                        choices=["auto", "skeleton", "fusion"],
+                        choices=["auto", "skeleton", "emb", "fusion"],
                         help="模型类型：auto 按 checkpoint 自动检测"
-                             "（state_dict 含 resnet 参数 → fusion）；"
-                             "fusion 需 data/dataset/{split}_pose.npz 与"
-                             " {split}_roi.npz（ROI 为 JPEG 字节）")
+                             "（state_dict 含 resnet → fusion；含 word_emb"
+                             " → emb 嵌入头）；fusion 需 data/dataset/"
+                             "{split}_pose.npz 与 {split}_roi.npz")
     parser.add_argument("--data-dir", type=str, default="data/dataset")
     parser.add_argument("--splits", nargs="+", default=["dev", "test"])
     parser.add_argument("--target-t", type=int, default=128)
@@ -381,9 +381,12 @@ def main() -> int:
           f"训练 best WER {ckpt.get('best_wer', '?')}）")
 
     if args.model_type == "auto":
-        args.model_type = ("fusion" if any(
-            k.startswith("resnet.") for k in ckpt["state_dict"])
-            else "skeleton")
+        if any(k.startswith("resnet.") for k in ckpt["state_dict"]):
+            args.model_type = "fusion"
+        elif "word_emb" in ckpt["state_dict"]:
+            args.model_type = "emb"
+        else:
+            args.model_type = "skeleton"
         print(f"model-type: auto → {args.model_type}")
 
     # 训练集词频（词频桶用）
@@ -404,6 +407,11 @@ def main() -> int:
             hand_adjacency=build_hand_graph(num_hands=2),
             pose_adjacency=build_adjacency(POSE_CONNECTIONS, 33),
             resnet_pretrained=False).to(device)
+    elif args.model_type == "emb":
+        model = STGCNCTCEmb(
+            num_classes=len(vocab),
+            adjacency=build_hand_graph(num_hands=2),
+            embed_dim=ckpt["state_dict"]["word_emb"].shape[1]).to(device)
     else:
         model = STGCNCTC(num_classes=len(vocab),
                          adjacency=build_hand_graph(num_hands=2)).to(device)
