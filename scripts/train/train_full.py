@@ -168,23 +168,37 @@ def load_split(path: Path, vocab_idx: dict | None, min_det: float,
 
 
 def decode_and_wer(model, x, targets, target_lengths, vocab, device,
-                   beam_width: int = 1):
-    """贪心/束搜索解码 + WER/句准确率。返回 (wer, acc, loss)。"""
+                   beam_width: int = 1, batch_size: int = 32):
+    """贪心/束搜索解码 + WER/句准确率。返回 (wer, acc, loss)。
+
+    分批前向：全词表下 head 输出 (N, K+1, T', V) 随 K 线性膨胀，
+    一次性评估 489 段会 OOM（K=3837 时 ~9.4GB），分批规避。
+    """
     model.eval()
-    with torch.no_grad():
-        logits = model(x.to(device))
-        lp = torch.log_softmax(logits, dim=2).permute(1, 0, 2)
-        loss = F.ctc_loss(lp, targets.to(device),
-                          input_lengths=torch.full((len(x),), 32,
-                                                   device=device),
-                          target_lengths=target_lengths.to(device))
-        if beam_width > 1:
-            decoded = model.beam_decode(logits, beam_width=beam_width)
-        else:
-            decoded = model.decode(logits)
     total_err = total_ref = 0
     correct = 0
-    for i, hyp in enumerate(decoded):
+    total_loss = 0.0
+    n_batch = 0
+    decoded_all = []
+    with torch.no_grad():
+        for s in range(0, len(x), batch_size):
+            xb = x[s:s + batch_size].to(device)
+            yb = targets[s:s + batch_size].to(device)
+            ylb = target_lengths[s:s + batch_size].to(device)
+            logits = model(xb)
+            lp = torch.log_softmax(logits, dim=2).permute(1, 0, 2)
+            loss = F.ctc_loss(lp, yb,
+                              input_lengths=torch.full((len(xb),), 32,
+                                                       device=device),
+                              target_lengths=ylb)
+            total_loss += loss.item()
+            n_batch += 1
+            if beam_width > 1:
+                decoded_all.extend(model.beam_decode(logits,
+                                                     beam_width=beam_width))
+            else:
+                decoded_all.extend(model.decode(logits))
+    for i, hyp in enumerate(decoded_all):
         ref = [vocab[c - 1]
                for c in targets[i][:int(target_lengths[i])].tolist()]
         hyp_words = [vocab[c - 1] for c in hyp if 0 < c <= len(vocab)]
@@ -193,7 +207,7 @@ def decode_and_wer(model, x, targets, target_lengths, vocab, device,
         if ref == hyp_words:
             correct += 1
     wer = total_err / max(total_ref, 1)
-    return wer, correct / max(len(decoded), 1), loss.item()
+    return wer, correct / max(len(decoded_all), 1), total_loss / max(n_batch, 1)
 
 
 def main() -> int:
