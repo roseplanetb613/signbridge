@@ -379,7 +379,7 @@ def main() -> int:
                                  input_lengths=torch.full((len(xb),), 32,
                                                           device=device),
                                  target_lengths=ylb)
-                    + args.kld_weight * kld_fn(logits_f, logits_t))
+                    + args.kld_weight * kld_fn(logits_f, logits_t.detach()))
             # 官方 TFNet 同款防护：loss 非有限时跳过该 batch
             # （TFNet 训练中偶发数值问题常见，跳过避免污染全部权重）
             if not torch.isfinite(loss):
