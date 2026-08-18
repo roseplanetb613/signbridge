@@ -91,6 +91,7 @@ class SkeletonDataset(Dataset):
             data = space_augment(data)
         else:
             data = align_length(data, self.target_t)
+        data = np.nan_to_num(data)      # 防御：增强路径偶发 NaN 不污染模型
         x = np.transpose(data, (2, 0, 1))       # (3, T, 42)
         return (torch.from_numpy(x).float(),
                 self.targets[i], self.target_lengths[i])
@@ -378,6 +379,12 @@ def main() -> int:
                                                           device=device),
                                  target_lengths=ylb)
                     + args.kld_weight * kld_fn(logits_f, logits_t))
+            # 官方 TFNet 同款防护：loss 非有限时跳过该 batch
+            # （TFNet 训练中偶发数值问题常见，跳过避免污染全部权重）
+            if not torch.isfinite(loss):
+                print(f"[警告] epoch {epoch} batch {n_batch + 1}: "
+                      f"loss 非有限（{loss.item()}），跳过", flush=True)
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
