@@ -355,6 +355,7 @@ def main() -> int:
         model.train()
         total_loss = 0.0
         n_batch = 0
+        n_skip = 0
         pbar = tqdm(loader, desc=f"epoch {epoch}/{args.epochs}",
                     unit="batch", ncols=110, leave=False)
         for xb, yb, ylb in pbar:
@@ -382,10 +383,24 @@ def main() -> int:
             # 官方 TFNet 同款防护：loss 非有限时跳过该 batch
             # （TFNet 训练中偶发数值问题常见，跳过避免污染全部权重）
             if not torch.isfinite(loss):
-                print(f"[警告] epoch {epoch} batch {n_batch + 1}: "
-                      f"loss 非有限（{loss.item()}），跳过", flush=True)
+                if n_skip < 3:
+                    print(f"[警告] epoch {epoch} batch {n_batch + 1}: "
+                          f"loss 非有限（{loss.item()}），跳过", flush=True)
+                n_skip += 1
+                optimizer.zero_grad()
                 continue
             loss.backward()
+            # 梯度防护：BN/数值问题可能产生非有限梯度（clip 不处理 nan）
+            bad_grad = any(not torch.isfinite(p.grad).all()
+                           for p in model.parameters()
+                           if p.grad is not None)
+            if bad_grad:
+                if n_skip < 3:
+                    print(f"[警告] epoch {epoch} batch {n_batch + 1}: "
+                          f"梯度非有限，跳过 step", flush=True)
+                n_skip += 1
+                optimizer.zero_grad()
+                continue
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
             total_loss += loss.item()

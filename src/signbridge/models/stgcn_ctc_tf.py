@@ -76,11 +76,14 @@ class STGCNCTCTF(nn.Module):
 
         # 时域头（与 STGCNCTC.head 等价，Conv1d 便于拼接）
         self.head_t = nn.Conv1d(self.feat_dim, self.num_classes + 1, 1)
-        # 频域分支：幅度谱 → 1D Conv+BN+ReLU（保持 T'，不再下采样）
+        # 频域分支：幅度谱 → 1D Conv+GroupNorm+ReLU（保持 T'，不再下采样）
+        # 用 GroupNorm 而非 BatchNorm：|FFT| 幅度谱结构化（DC 大/高频趋 0），
+        # BN 在 batch 方差为 0 的通道上除 0 → 梯度 nan → 权重污染（实测 batch
+        # 63 起全 nan 的元凶）
         self.freq_conv = nn.Sequential(
             nn.Conv1d(self.feat_dim, self.feat_dim, freq_kernel,
                       padding=freq_kernel // 2),
-            nn.BatchNorm1d(self.feat_dim),
+            nn.GroupNorm(num_groups=4, num_channels=self.feat_dim),
             nn.ReLU(inplace=True),
         )
         self.head_f = nn.Conv1d(self.feat_dim, self.num_classes + 1, 1)
