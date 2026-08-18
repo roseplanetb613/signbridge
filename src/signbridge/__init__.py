@@ -26,6 +26,7 @@ from signbridge.hands.sources import CameraSource, ImageSource, VideoSource
 from signbridge.models.protocol import SkeletonClassifier
 from signbridge.models.stgcn import STGCN
 from signbridge.models.stgcn_ctc import STGCNCTC, STGCNCTCEmb
+from signbridge.models.stgcn_ctc_tf import STGCNCTCTF, SeqKD
 from signbridge.models.stgcn_fusion import FusionSTGCNCTC
 
 __all__ = [
@@ -48,6 +49,8 @@ __all__ = [
     "STGCN",
     "STGCNCTC",
     "STGCNCTCEmb",
+    "STGCNCTCTF",
+    "SeqKD",
     "FusionSTGCNCTC",
     "HandDetector",
     "draw_landmarks",
