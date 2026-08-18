@@ -31,7 +31,9 @@
 
 ## 关键技术点（别踩坑）
 - np.load 是惰性的，真实耗时在数组访问处；npz object 数组反序列化后要显式 float32 转换
-- **Windows OpenMP 冲突（重要）**：import torch 后 numpy 反序列化大 npz object 数组慢 5000 倍（train.npz 0.5s→46min，表现为"卡死"在数据加载）。所有 import torch 的脚本顶部必须先 `os.environ.setdefault("OMP_NUM_THREADS", "1")` 再 import（train_full_emb/full/fusion/roi_only、wer_buckets、_scan_fusion_decode、ablate_fusion_streams 均已加）
+- **NpzFile 无缓存（重要）**：每次 `d["data"]` 访问都重新解压整个数组（~0.45s/次）——列表推导里反复 `d["data"][i]` = 数千次全量解压（卡死 37 分钟）；必须先取引用再循环（所有脚本已修）
+- **Windows OpenMP 冲突**：import torch 后 numpy 反序列化大 npz object 数组慢 5000 倍（误诊过的坑，OMP_NUM_THREADS=1 保留无害）；真凶是 NpzFile 重复解压
+- **蒸馏类 loss（SeqKD/KL）对 ref 的梯度**：logits 极端值（如迁移头输出 max~100）下 float32 backward 产生 NaN——ref 侧必须 detach（老师不收梯度，蒸馏标准做法）；详见 docs/postmortem-gradient-nan.md
 - Windows spawn：后台任务运行中不要移动/编辑脚本文件；DataLoader 用 num_workers=0
 - mediapipe 日志抑制：GLOG_minloglevel=2 + ABSL_MIN_LOG_LEVEL=2（脚本里已设）
 - 提取/训练脚本已有 chunked pool（每 400 视频重建）、batch 断点（每 100 batch）、tqdm 进度条——别回退
