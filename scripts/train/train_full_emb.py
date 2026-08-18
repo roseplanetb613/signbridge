@@ -12,6 +12,7 @@
 
 import argparse
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from signbridge import STGCNCTCEmb, build_hand_graph
 
@@ -139,15 +141,29 @@ def to_tensor_batch(samples, target_t: int):
 
 
 def load_split(path: Path, vocab_idx: dict | None, min_det: float,
-               target_t: int, max_samples: int = 0):
+               target_t: int, max_samples: int = 0, verbose: bool = True):
+    # np.load 是惰性的：真实耗时在数组访问处（反序列化），分步打印
+    t0 = time.monotonic()
     d = np.load(path, allow_pickle=True)
+    if verbose:
+        print(f"[数据] {path.stem}.npz 打开（{time.monotonic() - t0:.0f}s）",
+              flush=True)
+    t0 = time.monotonic()
     keep = [i for i in range(len(d["data"]))
             if d["detection_rates"][i] >= min_det]
     if max_samples > 0:
         keep = keep[:max_samples]
+    if verbose:
+        print(f"[数据]   质量过滤 {len(keep)} 段"
+              f"（{time.monotonic() - t0:.0f}s）", flush=True)
+    t0 = time.monotonic()
     samples = [d["data"][i] for i in keep]
     glosses = [str(d["glosses"][i]) for i in keep]
+    if verbose:
+        print(f"[数据]   data/glosses 反序列化"
+              f"（{time.monotonic() - t0:.0f}s）", flush=True)
 
+    t0 = time.monotonic()
     targets, target_lengths = [], []
     for g in glosses:
         ids = [vocab_idx[w] for w in gloss_words(g) if w in vocab_idx]
@@ -157,6 +173,9 @@ def load_split(path: Path, vocab_idx: dict | None, min_det: float,
     targets_pad = torch.zeros(len(targets), max_len, dtype=torch.long)
     for i, ids in enumerate(targets):
         targets_pad[i, :len(ids)] = torch.tensor(ids)
+    if verbose:
+        print(f"[数据]   标签构建 {len(targets)} 条"
+              f"（{time.monotonic() - t0:.0f}s）", flush=True)
     return (samples, targets_pad, torch.tensor(target_lengths), glosses)
 
 
@@ -281,11 +300,15 @@ def main() -> int:
 
     if args.min_count > 1:
         # 从 train glosses 统计词频，过滤低频词（先读 glosses）
+        print("[数据] 统计 train 词频...", flush=True)
+        t0 = time.monotonic()
         d_train_raw = np.load(train_path, allow_pickle=True)
         freq = Counter()
         for g in d_train_raw["glosses"]:
             for w in gloss_words(str(g)):
                 freq[w] += 1
+        print(f"[数据]   词频统计完成（{time.monotonic() - t0:.0f}s）",
+              flush=True)
         vocab = [w for w in vocab_raw if freq.get(w, 0) >= args.min_count]
         print(f"词表过滤: {len(vocab_raw)} → {len(vocab)} 词"
               f"（min_count={args.min_count}）")
@@ -357,7 +380,9 @@ def main() -> int:
         model.train()
         total_loss = 0.0
         n_batch = 0
-        for xb, yb, ylb in loader:
+        pbar = tqdm(loader, desc=f"epoch {epoch}/{args.epochs}",
+                    unit="batch", ncols=110, leave=False)
+        for xb, yb, ylb in pbar:
             xb = xb.to(device)
             yb = yb.to(device)
             ylb = ylb.to(device)
@@ -372,6 +397,8 @@ def main() -> int:
             optimizer.step()
             total_loss += loss.item()
             n_batch += 1
+            pbar.set_postfix(loss=f"{loss.item():.3f}")
+        pbar.close()
         train_loss = total_loss / max(n_batch, 1)
 
         wer, acc, dev_loss = decode_and_wer(
