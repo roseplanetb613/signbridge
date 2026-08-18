@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from signbridge.core.graphs import build_hand_graph
-from signbridge.models.stgcn_ctc import STGCNCTC
+from signbridge.models.stgcn_ctc import STGCNCTC, STGCNCTCEmb
 
 
 def _adj():
@@ -89,3 +89,51 @@ def test_embed_shape_and_t_invariance():
         e2 = model.embed(torch.randn(2, 3, 64, 21))    # 不同 T（下采样后 T' 不同）
     assert e1.shape == (2, 256)                        # C_last = 256
     assert e2.shape == (2, 256)                        # 时间均值 → 与 T 无关
+
+
+class TestSTGCNCTCEmb:
+    """嵌入头版（方案 A'）：特征投影 + 词嵌入表，logits = f @ E^T。"""
+
+    def test_forward_shape_and_embed_table(self):
+        model = STGCNCTCEmb(num_classes=10, adjacency=_adj(), embed_dim=64)
+        out = model(torch.randn(2, 3, 128, 21))
+        assert out.shape == (2, 32, 11)                # (N, T', K+1)
+        assert model.word_emb.shape == (11, 64)        # (K+1, D)，E[0]=blank
+        assert model.embed_dim == 64
+
+    def test_log_probs_normalized(self):
+        model = STGCNCTCEmb(num_classes=10, adjacency=_adj(), embed_dim=64)
+        lp = model.log_probs(torch.randn(2, 3, 128, 21))
+        assert lp.shape == (32, 2, 11)
+        assert torch.allclose(lp.exp().sum(dim=2), torch.ones(32, 2), atol=1e-4)
+
+    def test_ctc_backward_gradients_include_word_emb(self):
+        model = STGCNCTCEmb(num_classes=5, adjacency=_adj(), embed_dim=64)
+        x = torch.randn(2, 3, 128, 21)
+        targets = torch.tensor([[1, 2, 0, 0], [3, 0, 0, 0]])
+        target_lengths = torch.tensor([2, 1])
+        loss = F.ctc_loss(model.log_probs(x), targets,
+                          input_lengths=torch.full((2,), 32),
+                          target_lengths=target_lengths)
+        loss.backward()
+        for name, p in model.named_parameters():
+            assert p.grad is not None, f"参数 {name} 无梯度"
+        assert model.word_emb.grad is not None
+
+    def test_decode_and_beam_interface(self):
+        model = STGCNCTCEmb(num_classes=3, adjacency=_adj(), embed_dim=64)
+        model.eval()
+        logits = torch.randn(2, 32, 4)
+        assert len(model.decode(logits)) == 2
+        assert len(model.beam_decode(logits, beam_width=5)) == 2
+
+    def test_custom_embed_dim(self):
+        model = STGCNCTCEmb(num_classes=3, adjacency=_adj(), embed_dim=16)
+        assert model(torch.randn(2, 3, 128, 21)).shape == (2, 32, 4)
+
+    def test_invalid_input_raises(self):
+        model = STGCNCTCEmb(num_classes=3, adjacency=_adj(), embed_dim=64)
+        with pytest.raises(ValueError):
+            model(torch.randn(2, 3, 128, 20))
+        with pytest.raises(ValueError):
+            model(torch.randn(2, 3, 5, 21))

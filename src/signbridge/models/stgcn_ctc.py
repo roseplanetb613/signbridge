@@ -113,3 +113,49 @@ class STGCNCTC(nn.Module):
         x = x.mean(dim=3)          # 节点均值 → (N, C, T')
         x = x.mean(dim=2)          # 时间均值 → (N, C)
         return x
+
+
+class STGCNCTCEmb(STGCNCTC):
+    """嵌入头版 STGCNCTC：特征投影到 D 维后与词嵌入表点积（方案 A'）。
+
+    与 one-hot 头（STGCNCTC）的区别仅在分类层：
+      one-hot: head Conv2d(C_last, K+1) → 1321 个相互独立的类别
+      嵌入头:  head Conv2d(C_last, D) → f (N,T',D)；logits = f @ word_emb^T
+               word_emb (K+1, D) 随机初始化、随 CTC 训练学习
+    词类共享 D 维空间——语义相近的词 logits 相关，梯度可沿嵌入
+    空间在词间"溢出"（低频词从高频词借力）。blank 是 word_emb[0]。
+
+    logits/decode/beam_decode 接口与 STGCNCTC 完全一致。
+    """
+
+    def __init__(self, num_classes, adjacency, embed_dim: int = 256,
+                 emb_std: float = 0.1, in_channels=3,
+                 channels=(64, 64, 64, 128, 128, 128, 256, 256, 256),
+                 strides=(1, 1, 1, 2, 1, 1, 2, 1, 1),
+                 kernel_size=9, adaptive=True, dropout=0.5):
+        super().__init__(
+            num_classes, adjacency, in_channels=in_channels,
+            channels=channels, strides=strides, kernel_size=kernel_size,
+            adaptive=adaptive, dropout=dropout)
+        self.embed_dim = int(embed_dim)
+        # 替换 one-hot 分类头：特征投影 + 词嵌入表（E[0] = blank）
+        self.head = nn.Conv2d(channels[-1], self.embed_dim, kernel_size=1)
+        self.word_emb = nn.Parameter(
+            torch.randn(self.num_classes + 1, self.embed_dim) * emb_std)
+
+    def forward(self, x):
+        if x.dim() != 4:
+            raise ValueError(f"输入必须是 4 维 (N,C,T,V)，收到 {x.dim()} 维")
+        if x.shape[1] != self.in_channels:
+            raise ValueError(
+                f"通道数应为 {self.in_channels}，收到 {x.shape[1]}")
+        if x.shape[3] != self.num_nodes:
+            raise ValueError(f"节点数应为 {self.num_nodes}，收到 {x.shape[3]}")
+        if x.shape[2] < self.kernel_size:
+            raise ValueError(
+                f"时间长度 T={x.shape[2]} 必须 >= kernel_size={self.kernel_size}")
+        for block in self.blocks:
+            x = block(x)
+        f = self.head(x).mean(dim=3)        # (N, D, T')
+        f = f.permute(0, 2, 1)              # (N, T', D)
+        return torch.matmul(f, self.word_emb.t())   # (N, T', K+1)
