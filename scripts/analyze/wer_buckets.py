@@ -251,13 +251,18 @@ def analyze_split(model, split_path: Path, vocab, vocab_idx, device,
                   target_t: int, beam_width: int, min_det: float,
                   train_freq: Counter, length_bonus: float = 0.0) -> dict:
     """skeleton 模式：hand 单流整批前向。"""
+    # NpzFile 每次 d["data"] 访问都重新解压整个数组——先取引用再循环
     d = np.load(split_path, allow_pickle=True)
-    keep = [i for i in range(len(d["data"]))
-            if float(d["detection_rates"][i]) >= min_det]
-    samples = [d["data"][i] for i in keep]
-    glosses = [str(d["glosses"][i]) for i in keep]
-    translators = [str(d["translators"][i]) for i in keep]
-    videos = [str(d["videos"][i]) for i in keep]
+    data_arr = d["data"]
+    rates = d["detection_rates"]
+    gloss_arr = d["glosses"]
+    trans_arr = d["translators"]
+    video_arr = d["videos"]
+    keep = [i for i in range(len(data_arr)) if float(rates[i]) >= min_det]
+    samples = [data_arr[i] for i in keep]
+    glosses = [str(gloss_arr[i]) for i in keep]
+    translators = [str(trans_arr[i]) for i in keep]
+    videos = [str(video_arr[i]) for i in keep]
 
     x = to_tensor_batch(
         [align_length(np.asarray(s, dtype=np.float32), target_t)
@@ -292,12 +297,14 @@ def analyze_split_fusion(model, base: Path, split: str, vocab, device,
                          train_freq: Counter, length_bonus: float = 0.0,
                          batch_size: int = FUSION_BATCH) -> dict:
     """fusion 模式：三流数据分批前向（ROI 即时解码，内存友好）。"""
+    # NpzFile 每次 d["data"] 访问都重新解压整个数组——先取引用再循环
     d = np.load(base / f"{split}.npz", allow_pickle=True)
+    data_arr = d["data"]
     pose_img = np.load(base / f"{split}_pose.npz",
                        allow_pickle=True)["pose_img"]
     roi_arr = np.load(base / f"{split}_roi.npz", allow_pickle=True)["roi"]
     rates = d["detection_rates"]
-    keep = [i for i in range(len(d["data"]))
+    keep = [i for i in range(len(data_arr))
             if float(rates[i]) >= min_det]
     glosses = d["glosses"]
     translators = d["translators"]
@@ -309,7 +316,7 @@ def analyze_split_fusion(model, base: Path, split: str, vocab, device,
         for s in range(0, len(keep), batch_size):
             idx = keep[s:s + batch_size]
             ht, pt, rt = _fusion_batch(
-                [d["data"][i] for i in idx],
+                [data_arr[i] for i in idx],
                 [pose_img[i] for i in idx],
                 [roi_arr[i] for i in idx], target_t)
             logits = model(ht.to(device), pt.to(device), rt.to(device))

@@ -148,25 +148,29 @@ def to_tensor_batch(samples, target_t: int):
 
 def load_split(path: Path, vocab_idx: dict | None, min_det: float,
                target_t: int, max_samples: int = 0, verbose: bool = True):
-    # np.load 是惰性的：真实耗时在数组访问处（反序列化），分步打印
+    # np.load 是惰性的：真实耗时在数组访问处（反序列化），分步打印。
+    # 注意：NpzFile 每次 d["data"] 访问都会重新解压整个数组（无缓存）！
+    # 必须先取引用再循环，否则列表推导 = 数千次全量解压（卡死）。
     t0 = time.monotonic()
     d = np.load(path, allow_pickle=True)
+    data_arr = d["data"]
+    rates = d["detection_rates"]
+    gloss_arr = d["glosses"]
     if verbose:
-        print(f"[数据] {path.stem}.npz 打开（{time.monotonic() - t0:.0f}s）",
+        print(f"[数据] {path.stem}.npz 解压（{time.monotonic() - t0:.0f}s）",
               flush=True)
     t0 = time.monotonic()
-    keep = [i for i in range(len(d["data"]))
-            if d["detection_rates"][i] >= min_det]
+    keep = [i for i in range(len(data_arr)) if rates[i] >= min_det]
     if max_samples > 0:
         keep = keep[:max_samples]
     if verbose:
         print(f"[数据]   质量过滤 {len(keep)} 段"
               f"（{time.monotonic() - t0:.0f}s）", flush=True)
     t0 = time.monotonic()
-    samples = [d["data"][i] for i in keep]
-    glosses = [str(d["glosses"][i]) for i in keep]
+    samples = [data_arr[i] for i in keep]
+    glosses = [str(gloss_arr[i]) for i in keep]
     if verbose:
-        print(f"[数据]   data/glosses 反序列化"
+        print(f"[数据]   逐段访问 {len(samples)} 段"
               f"（{time.monotonic() - t0:.0f}s）", flush=True)
 
     t0 = time.monotonic()

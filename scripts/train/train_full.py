@@ -144,11 +144,15 @@ def to_tensor_batch(samples, target_t: int):
 
 def load_split(path: Path, vocab_idx: dict | None, min_det: float,
                target_t: int):
+    # 注意：NpzFile 每次 d["data"] 访问都会重新解压整个数组（无缓存）！
+    # 必须先取引用再循环，否则列表推导 = 数千次全量解压（卡死）。
     d = np.load(path, allow_pickle=True)
-    keep = [i for i in range(len(d["data"]))
-            if d["detection_rates"][i] >= min_det]
-    samples = [d["data"][i] for i in keep]
-    glosses = [str(d["glosses"][i]) for i in keep]
+    data_arr = d["data"]
+    rates = d["detection_rates"]
+    gloss_arr = d["glosses"]
+    keep = [i for i in range(len(data_arr)) if rates[i] >= min_det]
+    samples = [data_arr[i] for i in keep]
+    glosses = [str(gloss_arr[i]) for i in keep]
 
     targets, target_lengths = [], []
     for g in glosses:

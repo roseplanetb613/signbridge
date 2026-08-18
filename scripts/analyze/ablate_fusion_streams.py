@@ -201,11 +201,12 @@ def main() -> int:
 
     base = Path(args.data_dir)
     d = np.load(base / f"{args.split}.npz", allow_pickle=True)
+    data_arr = d["data"]     # NpzFile 无缓存：先取引用，避免重复解压
     pose_img = np.load(base / f"{args.split}_pose.npz",
                        allow_pickle=True)["pose_img"]
     roi_arr = np.load(base / f"{args.split}_roi.npz",
                       allow_pickle=True)["roi"]
-    keep = [i for i in range(len(d["data"]))
+    keep = [i for i in range(len(data_arr))
             if float(d["detection_rates"][i]) >= args.min_det]
     if args.max_samples > 0:
         keep = keep[:args.max_samples]
@@ -220,7 +221,7 @@ def main() -> int:
         for s in range(0, len(keep), FUSION_BATCH):
             idx = keep[s:s + FUSION_BATCH]
             ht = wb.to_tensor_batch(
-                [wb.align_length(np.asarray(d["data"][i], dtype=np.float32),
+                [wb.align_length(np.asarray(data_arr[i], dtype=np.float32),
                                  TARGET_T) for i in idx], TARGET_T)
             pt = wb.to_tensor_batch(
                 [wb.align_length(np.asarray(pose_img[i], dtype=np.float32),

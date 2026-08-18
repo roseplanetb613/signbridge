@@ -139,11 +139,12 @@ def main() -> int:
     else:
         t0 = time.monotonic()
         d = np.load(base / f"{args.split}.npz", allow_pickle=True)
+        data_arr = d["data"]     # NpzFile 无缓存：先取引用，避免重复解压
         pose_img = np.load(base / f"{args.split}_pose.npz",
                            allow_pickle=True)["pose_img"]
         roi_arr = np.load(base / f"{args.split}_roi.npz",
                           allow_pickle=True)["roi"]
-        keep = [i for i in range(len(d["data"]))
+        keep = [i for i in range(len(data_arr))
                 if float(d["detection_rates"][i]) >= wb.MIN_DETECTION]
         if args.max_samples > 0:
             keep = keep[:args.max_samples]
@@ -156,7 +157,7 @@ def main() -> int:
             for s in range(0, len(keep), wb.FUSION_BATCH):
                 idx = keep[s:s + wb.FUSION_BATCH]
                 ht, pt, rt = wb._fusion_batch(
-                    [d["data"][i] for i in idx],
+                    [data_arr[i] for i in idx],
                     [pose_img[i] for i in idx],
                     [roi_arr[i] for i in idx], TARGET_T)
                 lg = model(ht.to(device), pt.to(device),
