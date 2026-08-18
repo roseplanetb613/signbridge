@@ -62,3 +62,20 @@ def build_hand_graph(num_hands: int = 1) -> np.ndarray:
         raise ValueError("num_hands 必须 >= 1")
     single = build_adjacency(HAND_CONNECTIONS, 21)
     return build_block_diagonal_graph(single, num_hands)
+
+
+def build_hand_pose_graph(hand_adjacency, pose_adjacency) -> np.ndarray:
+    """双手图 + 人体姿态图 → 分块对角拼接图（hand 在前、pose 在后）。
+
+    用于双流骨架拼接（hand 42 + pose 33 = 75 节点）：两个子图内部
+    连通、跨子图无边（跨模态关联由 STGCN 的图卷积后续层学习）。
+    """
+    h = np.asarray(hand_adjacency, dtype=np.float32)
+    p = np.asarray(pose_adjacency, dtype=np.float32)
+    if h.ndim != 2 or p.ndim != 2:
+        raise ValueError("邻接矩阵必须是方阵")
+    n = h.shape[0] + p.shape[0]
+    out = np.zeros((n, n), dtype=np.float32)
+    out[:h.shape[0], :h.shape[0]] = h
+    out[h.shape[0]:, h.shape[0]:] = p
+    return out

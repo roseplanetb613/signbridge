@@ -9,7 +9,11 @@ from signbridge.core.features import (
     FeatureVerifier,
     HandShapeFeature,
 )
-from signbridge.core.graphs import build_hand_graph
+from signbridge.core.graphs import (
+    build_hand_graph,
+    build_hand_pose_graph,
+    build_adjacency,
+)
 from signbridge.core.landmarks import (
     HAND_CONNECTIONS,
     HAND_LANDMARK_NAMES,
@@ -45,6 +49,8 @@ __all__ = [
     "FeatureHungarianMatcher",
     "OneEuroSmoother",
     "build_hand_graph",
+    "build_hand_pose_graph",
+    "build_adjacency",
     "SkeletonClassifier",
     "STGCN",
     "STGCNCTC",

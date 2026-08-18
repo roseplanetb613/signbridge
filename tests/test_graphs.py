@@ -80,3 +80,21 @@ def test_hand_graph_matches_connections():
 def test_invalid_num_hands_raises():
     with pytest.raises(ValueError):
         build_hand_graph(num_hands=0)
+
+
+def test_hand_pose_graph_block_diagonal():
+    """hand 42 + pose 33 → 75×75 分块对角（跨子图无边）。"""
+    from signbridge import build_adjacency, build_hand_pose_graph
+    hand = build_hand_graph(num_hands=2)
+    pose = build_adjacency(
+        ((0, 1), (1, 2)), 5)          # 小 pose 图便于验证
+    g = build_hand_pose_graph(hand, pose)
+    assert g.shape == (47, 47)
+    # 内部子图保持
+    assert np.array_equal(g[:42, :42], hand)
+    assert np.array_equal(g[42:, 42:], pose)
+    # 跨子图无边
+    assert g[:42, 42:].sum() == 0
+    assert g[42:, :42].sum() == 0
+    # 对称
+    assert np.array_equal(g, g.T)
