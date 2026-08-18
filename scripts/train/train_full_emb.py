@@ -10,6 +10,12 @@
 用法: python scripts/train/train_full_emb.py [--epochs 30] [--embed-dim 256]
 """
 
+import os
+# Windows 排坑：PyTorch 自带 OpenMP 与 numpy 的 OpenMP 运行时冲突，
+# 会导致 npz object 数组反序列化慢 5000 倍（0.5s → 46min）。
+# 必须在 import torch/numpy 之前强制单线程。
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import argparse
 import sys
 import time

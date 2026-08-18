@@ -8,6 +8,11 @@
                                     [--resume checkpoints/fusion_best.pt]
 """
 
+import os
+# Windows 排坑：PyTorch OpenMP 与 numpy OpenMP 冲突 → npz object 数组
+# 反序列化慢 5000 倍；必须在 import torch/numpy 之前强制单线程。
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import argparse
 import sys
 import time
