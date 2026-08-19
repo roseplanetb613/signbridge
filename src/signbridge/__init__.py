@@ -2,6 +2,7 @@
 
 __version__ = "0.5.0"
 
+from signbridge.core.bleu import corpus_bleu, sentence_bleu
 from signbridge.core.errors import SignBridgeError
 from signbridge.core.features import (
     DistanceFeatureVerifier,
@@ -35,6 +36,8 @@ from signbridge.models.stgcn_fusion import FusionSTGCNCTC
 
 __all__ = [
     "__version__",
+    "corpus_bleu",
+    "sentence_bleu",
     "SignBridgeError",
     "HAND_CONNECTIONS",
     "HAND_LANDMARK_NAMES",

@@ -24,7 +24,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from signbridge import STGCNCTC, build_adjacency, build_hand_graph, build_hand_pose_graph
+from signbridge import (
+    STGCNCTC,
+    build_adjacency,
+    build_hand_graph,
+    build_hand_pose_graph,
+    corpus_bleu,
+)
 
 PUNCT = set("。，？！、；：""''（）《》")
 MIN_DETECTION = 0.3
@@ -193,7 +199,11 @@ def load_split_dual(base: Path, split: str, vocab_idx: dict | None,
 
 def decode_and_wer(model, x, targets, target_lengths, vocab, device,
                    beam_width: int = 5, batch_size: int = 32):
-    """贪心/束搜索解码 + WER/句准确率。分批前向防 OOM。"""
+    """贪心/束搜索解码 + WER/句准确率/BLEU-4。分批前向防 OOM。
+
+    返回 (wer, acc, loss, bleu4)：BLEU 为 corpus 级（平滑），
+    与 WER 互补（WER 看错误率、BLEU 看 n-gram 匹配度）。
+    """
     model.eval()
     total_err = total_ref = 0
     correct = 0
@@ -218,16 +228,21 @@ def decode_and_wer(model, x, targets, target_lengths, vocab, device,
                                                      beam_width=beam_width))
             else:
                 decoded_all.extend(model.decode(logits))
+    refs_all, hyps_all = [], []
     for i, hyp in enumerate(decoded_all):
         ref = [vocab[c - 1]
                for c in targets[i][:int(target_lengths[i])].tolist()]
         hyp_words = [vocab[c - 1] for c in hyp if 0 < c <= len(vocab)]
+        refs_all.append(ref)
+        hyps_all.append(hyp_words)
         total_err += levenshtein(ref, hyp_words)
         total_ref += len(ref)
         if ref == hyp_words:
             correct += 1
     wer = total_err / max(total_ref, 1)
-    return wer, correct / max(len(decoded_all), 1), total_loss / max(n_batch, 1)
+    bleu4, _, _ = corpus_bleu(refs_all, hyps_all, smooth=True)
+    return (wer, correct / max(len(decoded_all), 1),
+            total_loss / max(n_batch, 1), bleu4)
 
 
 def main() -> int:
@@ -288,11 +303,12 @@ def main() -> int:
             x = to_tensor_batch(
                 [align_length(np.asarray(s, dtype=np.float32), args.target_t)
                  for s in samples], args.target_t)
-            wer, acc, loss = decode_and_wer(
+            wer, acc, loss, bleu4 = decode_and_wer(
                 model, x, y, ylen, vocab, device,
                 beam_width=args.beam_width)
             print(f"[{split}] {len(samples)} 段：loss {loss:.3f} | "
-                  f"WER {wer:.3f} | 句准确率 {acc:.1%}")
+                  f"WER {wer:.3f} | 句准确率 {acc:.1%} | "
+                  f"BLEU-4 {bleu4:.4f}")
         return 0
 
     if args.min_count > 1:
@@ -357,7 +373,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = out_dir / "best_dual.pt"
     print(f"{'epoch':>5} {'train_loss':>10} {'dev_loss':>9} "
-          f"{'dev_WER':>8} {'dev_acc':>7}")
+          f"{'dev_WER':>8} {'dev_acc':>7} {'dev_BLEU':>9}")
     for epoch in range(start_epoch, args.epochs + 1):
         if args.warmup_epochs > 0 and epoch <= args.warmup_epochs:
             lr = args.lr * epoch / args.warmup_epochs
@@ -394,7 +410,7 @@ def main() -> int:
         pbar.close()
         train_loss = total_loss / max(n_batch, 1)
 
-        wer, acc, dev_loss = decode_and_wer(
+        wer, acc, dev_loss, bleu4 = decode_and_wer(
             model, x_dev, y_dev, ylen_dev, vocab, device,
             beam_width=args.beam_width)
         scheduler.step(dev_loss)
@@ -412,7 +428,7 @@ def main() -> int:
         else:
             suffix = ""
         print(f"{epoch:>5} {train_loss:>10.4f} {dev_loss:>9.4f} "
-              f"{wer:>8.3f} {acc:>7.3f}{suffix}", flush=True)
+              f"{wer:>8.3f} {acc:>7.3f} {bleu4:>9.4f}{suffix}", flush=True)
     print(f"\n最佳 dev WER: {best_wer:.3f} → {ckpt_path}")
     return 0
 
