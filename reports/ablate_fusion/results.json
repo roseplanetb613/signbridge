@@ -1,0 +1,148 @@
+{
+ "checkpoint": "checkpoints/fusion_best.pt",
+ "split": "dev",
+ "beam_width": 5,
+ "n_segments": 40,
+ "rows": [
+  {
+   "wer": 0.9946,
+   "seg_acc": 0.0,
+   "del": 121,
+   "ins": 0,
+   "sub": 62,
+   "hyp_avg": 1.57,
+   "config": "全流 hand+pose+roi",
+   "bonus": 0.0
+  },
+  {
+   "wer": 0.9946,
+   "seg_acc": 0.0,
+   "del": 106,
+   "ins": 0,
+   "sub": 77,
+   "hyp_avg": 1.95,
+   "config": "全流 hand+pose+roi",
+   "bonus": 1.0
+  },
+  {
+   "wer": 0.9946,
+   "seg_acc": 0.0,
+   "del": 95,
+   "ins": 0,
+   "sub": 88,
+   "hyp_avg": 2.23,
+   "config": "无 hand（pose+roi）",
+   "bonus": 0.0
+  },
+  {
+   "wer": 0.9946,
+   "seg_acc": 0.0,
+   "del": 77,
+   "ins": 0,
+   "sub": 106,
+   "hyp_avg": 2.67,
+   "config": "无 hand（pose+roi）",
+   "bonus": 1.0
+  },
+  {
+   "wer": 0.9837,
+   "seg_acc": 0.0,
+   "del": 74,
+   "ins": 1,
+   "sub": 106,
+   "hyp_avg": 2.77,
+   "config": "无 pose（hand+roi）",
+   "bonus": 0.0
+  },
+  {
+   "wer": 1.087,
+   "seg_acc": 0.0,
+   "del": 43,
+   "ins": 22,
+   "sub": 135,
+   "hyp_avg": 4.08,
+   "config": "无 pose（hand+roi）",
+   "bonus": 1.0
+  },
+  {
+   "wer": 1.25,
+   "seg_acc": 0.0,
+   "del": 37,
+   "ins": 48,
+   "sub": 145,
+   "hyp_avg": 4.88,
+   "config": "无 roi（hand+pose）",
+   "bonus": 0.0
+  },
+  {
+   "wer": 2.0217,
+   "seg_acc": 0.0,
+   "del": 1,
+   "ins": 192,
+   "sub": 179,
+   "hyp_avg": 9.38,
+   "config": "无 roi（hand+pose）",
+   "bonus": 1.0
+  },
+  {
+   "wer": 5.7826,
+   "seg_acc": 0.0,
+   "del": 0,
+   "ins": 891,
+   "sub": 173,
+   "hyp_avg": 26.88,
+   "config": "仅 hand",
+   "bonus": 0.0
+  },
+  {
+   "wer": 6.1739,
+   "seg_acc": 0.0,
+   "del": 0,
+   "ins": 964,
+   "sub": 172,
+   "hyp_avg": 28.7,
+   "config": "仅 hand",
+   "bonus": 1.0
+  },
+  {
+   "wer": 1.712,
+   "seg_acc": 0.0,
+   "del": 10,
+   "ins": 133,
+   "sub": 172,
+   "hyp_avg": 7.67,
+   "config": "仅 pose",
+   "bonus": 0.0
+  },
+  {
+   "wer": 3.1576,
+   "seg_acc": 0.0,
+   "del": 0,
+   "ins": 401,
+   "sub": 180,
+   "hyp_avg": 14.62,
+   "config": "仅 pose",
+   "bonus": 1.0
+  },
+  {
+   "wer": 2.3207,
+   "seg_acc": 0.0,
+   "del": 5,
+   "ins": 245,
+   "sub": 177,
+   "hyp_avg": 10.6,
+   "config": "仅 roi",
+   "bonus": 0.0
+  },
+  {
+   "wer": 3.3587,
+   "seg_acc": 0.0,
+   "del": 0,
+   "ins": 438,
+   "sub": 180,
+   "hyp_avg": 15.55,
+   "config": "仅 roi",
+   "bonus": 1.0
+  }
+ ]
+}
